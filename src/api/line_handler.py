@@ -32,13 +32,13 @@ QUESTION_WORDS_EN = {
 }
 QUESTION_WORDS_TH = {
     "มีไหม", "คืออะไร", "อย่างไร", "ยังไง", "ทำไม", "ใคร", "ที่ไหน",
-    "อยู่ไหน", "หา", "ช่วยหา", "บอกหน่อย", "อธิบาย", "สอน", "ยังไง",
-    "เท่าไร", "เมื่อไหร่", "อะไร", "ได้ไหม", "ได้มั้ย", "รู้ไหม",
+    "อยู่ไหน", "ช่วยหา", "บอกหน่อย", "อธิบายหน่อย", "สอนหน่อย",
+    "เท่าไร", "เมื่อไหร่", "ได้ไหม", "ได้มั้ย", "รู้ไหม", "คือยังไง",
 }
-QUESTION_MARKS = {"?", "?", "!", "?", "?"}
+QUESTION_MARKS = {"?", "?", "？"}
 
 # ─── Commands ───────────────────────────────────────────────────
-COMMANDS = {"search", "recent", "stats", "scopes", "help"}
+COMMANDS = {"search", "recent", "stats", "scopes", "help", "ask"}
 
 # ─── Task detection patterns ────────────────────────────────────
 TASK_STATUS_EN = {"pending", "in progress", "done", "completed", "cancelled", "blocked", "waiting"}
@@ -95,7 +95,10 @@ def _is_command(text: str) -> tuple[str, str] | None:
 
 
 def _is_question(text: str) -> bool:
-    """Detect whether text looks like a question."""
+    """Detect whether text is clearly a question.
+
+    Default flow is knowledge capture; questions must be explicit.
+    """
     stripped = text.strip()
     lower = stripped.lower()
     if stripped[-1:] in QUESTION_MARKS:
@@ -104,9 +107,9 @@ def _is_question(text: str) -> bool:
         if lower.startswith(word + " ") or lower == word:
             return True
     for word in QUESTION_WORDS_TH:
-        if word in lower:
+        if lower.startswith(word) or f" {word}" in lower:
             return True
-    if re.search(r"(อยากรู้|อยากทราบ|ช่วย(บอก|หา|สอน)|บอกหน่อย|สอนหน่อย)", lower):
+    if re.search(r"(อยากรู้|อยากทราบ|ช่วย(บอก|หา|สอน))", lower):
         return True
     return False
 
@@ -376,17 +379,60 @@ async def _handle_command(
         lines = [f"• {s.get('name', '')}" for s in scopes]
         return "🗂️ Scopes:\n" + "\n".join(lines)
 
+    if cmd == "ask":
+        if not args:
+            return "❓ ใช้: /ask <คำถาม>"
+        # Trigger Q&A directly via command
+        from src.llm.openrouter_client import OpenRouterClient
+        try:
+            results = await pg.search_fts(args, scope=scope, limit=5)
+        except Exception as e:
+            log.warning("Ask search failed: %s", e)
+            return "❌ ค้นหาล้มเหลว"
+        if not results:
+            return "🤖 ไม่พบข้อมูลที่เกี่ยวข้องในฐานความรู้"
+        context_parts = []
+        for i, doc in enumerate(results, 1):
+            snippet = doc.get("content", "")[:300]
+            title = doc.get("title", "Untitled")
+            context_parts.append(f"[{i}] {title}:\n{snippet}")
+        context = "\n\n".join(context_parts)
+        client = OpenRouterClient(settings)
+        if not client.enabled:
+            lines = [f"{i+1}. {r.get('title', '')}" for i, r in enumerate(results)]
+            return "🔍 ผลการค้นหา:\n" + "\n".join(lines)
+        system = (
+            "You are Synapse Oracle, a helpful knowledge assistant. "
+            "Answer the user's question using ONLY the provided context documents. "
+            "If the context doesn't contain the answer, say so honestly. "
+            "Respond in Thai if the user asked in Thai, otherwise English. "
+            "Be concise."
+        )
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {args}\n\nAnswer:"},
+        ]
+        try:
+            answer = await client.chat(messages, temperature=0.3, max_tokens=800)
+            sources = "\n".join(f"  {i+1}. {r.get('title', '')}" for i, r in enumerate(results))
+            return f"{answer}\n\n📚 ที่มา:\n{sources}"
+        except Exception as e:
+            log.warning("Ask LLM failed: %s", e)
+            lines = [f"{i+1}. {r.get('title', '')}" for i, r in enumerate(results)]
+            return "🔍 ผลการค้นหา:\n" + "\n".join(lines)
+
     if cmd == "help":
         return (
             "🤖 Synapse Oracle Assistant\n\n"
             "คำสั่ง:\n"
             "  /search <คำค้นหา> — ค้นหาความรู้\n"
+            "  /ask <คำถาม> — ถามและตอบจากความรู้\n"
             "  /recent [scope] — เอกสารล่าสุด\n"
             "  /stats — สถิติฐานความรู้\n"
             "  /scopes — รายการ scope\n"
             "  /help — ช่วยเหลือ\n\n"
             "ส่งข้อความปกติ → สรุปและถามก่อนบันทึก\n"
-            "ถามคำถาม → ค้นหาและตอบจากความรู้\n"
+            "ถามคำถามชัดเจน → ค้นหาและตอบจากความรู้\n"
             "ตอบ 'ใช่' → ยืนยันการบันทึก\n"
             "ตอบ 'ไม่' → ยกเลิก"
         )
@@ -763,15 +809,6 @@ async def process_line_events(
                     await _send_reply(access_token, reply_token, reply)
                     replied += 1
                 commands += 1
-                continue
-
-            # 1C. Questions → Q&A
-            if _is_question(text):
-                reply = await _answer_question(text, pg, settings, scope=scope)
-                if access_token and reply_token:
-                    await _send_reply(access_token, reply_token, reply)
-                    replied += 1
-                answered += 1
                 continue
 
         # 2. Skip stickers
