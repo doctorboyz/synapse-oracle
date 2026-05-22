@@ -19,7 +19,7 @@ class PgStore:
 
     async def connect(self) -> None:
         self._pool = await asyncpg.create_pool(
-            self._settings.database_url, min_size=2, max_size=10
+            self._settings.database_url, min_size=2, max_size=10, init=_init_jsonb
         )
 
     async def close(self) -> None:
@@ -60,10 +60,8 @@ class PgStore:
         summary: str | None = None,
     ) -> dict:
         content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
-        concepts_list = concepts if isinstance(concepts, list) else []
-        tags_list = tags if isinstance(tags, list) else []
-        concepts_json = concepts if isinstance(concepts, str) else json.dumps(concepts or [])
-        tags_json = tags if isinstance(tags, str) else json.dumps(tags or [])
+        concepts_list = _ensure_list(concepts)
+        tags_list = _ensure_list(tags)
 
         async with self.pool.acquire() as conn:
             existing = await conn.fetchrow(
@@ -78,11 +76,11 @@ class PgStore:
                    (title, content, content_hash, scope, doc_type, source_file,
                     source_type, source_project, oracle_name, brain_path,
                     brain_tier, concepts, tags, summary)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                    RETURNING id""",
                 title, content, content_hash, scope, doc_type, source_file,
                 source_type, source_project, oracle_name, brain_path,
-                brain_tier, concepts_json, tags_json, summary,
+                brain_tier, concepts_list, tags_list, summary,
             )
             doc_id = str(row["id"])
 
@@ -156,13 +154,13 @@ class PgStore:
                    (title, content, content_hash, scope, doc_type, source_file,
                     source_type, source_project, oracle_name, brain_path,
                     brain_tier, concepts, tags, summary)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13::jsonb, $14)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                    RETURNING id""",
                 title, new_content, content_hash,
                 old_row["scope"], old_row["doc_type"], old_row["source_file"],
                 old_row["source_type"], old_row["source_project"],
                 old_row["oracle_name"], old_row["brain_path"],
-                old_row["brain_tier"], old_row["concepts"], old_row["tags"],
+                old_row["brain_tier"], _ensure_list(old_row["concepts"]), _ensure_list(old_row["tags"]),
                 old_row.get("summary"),
             )
 
@@ -576,20 +574,19 @@ class PgStore:
     # --- Pending Reviews (LINE confirmation flow) ---
 
     async def create_pending_review(self, review: dict) -> dict:
-        import json
         async with self.pool.acquire() as conn:
             row = await conn.fetchrow(
                 """INSERT INTO pending_reviews
                    (title, content, summary, scope, doc_type, source_type, source_project,
                     oracle_name, tags, concepts, metadata, reply_token, user_id, chat_id)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                           $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14)
+                           $9, $10, $11, $12, $13, $14)
                    RETURNING id, created_at""",
                 review["title"], review["content"], review.get("summary"),
                 review.get("scope", "shared"), review.get("doc_type", "note"),
                 review.get("source_type", "line"), review.get("source_project"),
-                review.get("oracle_name"), json.dumps(review.get("tags", [])),
-                json.dumps(review.get("concepts", [])), json.dumps(review.get("metadata", {})),
+                review.get("oracle_name"), _ensure_list(review.get("tags")),
+                _ensure_list(review.get("concepts")), review.get("metadata", {}),
                 review.get("reply_token"), review.get("user_id"), review.get("chat_id"),
             )
         return {"id": str(row["id"]), "created_at": str(row["created_at"])}
@@ -679,6 +676,31 @@ class PgStore:
     async def clean_pending_reviews(self) -> None:
         async with self.pool.acquire() as conn:
             await conn.execute("DELETE FROM pending_reviews")
+
+
+async def _init_jsonb(conn: asyncpg.Connection) -> None:
+    """Register jsonb codec so asyncpg deserializes to native Python objects."""
+    await conn.set_type_codec(
+        "jsonb",
+        encoder=json.dumps,
+        decoder=json.loads,
+        schema="pg_catalog",
+    )
+
+
+def _ensure_list(val) -> list:
+    """Ensure value is a list. Handles JSON strings, single strings, None."""
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            if isinstance(parsed, list):
+                return parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return [val]
+    return []
 
 
 def _row_to_dict(row: asyncpg.Record) -> dict:
