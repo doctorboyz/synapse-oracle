@@ -76,8 +76,9 @@ class OpenRouterClient:
     ) -> str:
         """Summarize text. Falls back to Ollama if OpenRouter unavailable."""
         system = (
-            "You are a concise knowledge summarizer. Summarize in 2-3 sentences "
-            "preserving key facts. Respond ONLY with the summary."
+            "You are a concise knowledge summarizer. Summarize as 2-3 short bullet points "
+            "preserving key facts. Use bullet format (each line starts with -). "
+            "Respond ONLY with the bullet summary."
         )
         if language != "auto":
             system += f" Use {language}."

@@ -18,7 +18,7 @@ ORACLE_PATH_RULES: list[tuple[str, str, str]] = [
 
 VALID_DOC_TYPES = {
     "learning", "pattern", "retro", "reference", "handoff",
-    "protocol", "wisdom", "instinct", "log", "note",
+    "protocol", "wisdom", "instinct", "log", "note", "task",
 }
 
 VALID_TRACE_RELATIONS = {"derived_from", "refines", "contradicts", "extends", "references"}

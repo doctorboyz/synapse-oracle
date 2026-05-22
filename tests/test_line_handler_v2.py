@@ -296,7 +296,7 @@ class TestProcessLineEventsFullFlow:
             "summary": "",
             "scope": "line-user-U1",
             "doc_type": "note",
-            "source_type": "line",
+            "source_type": "line-user",
             "source_project": "line-integration",
             "oracle_name": "line-bot",
             "tags": ["line"],

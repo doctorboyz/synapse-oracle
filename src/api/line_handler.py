@@ -218,6 +218,23 @@ async def _find_existing_task(pg, title: str, scope: str) -> dict | None:
 
 # ─── LLM helpers via OpenRouter (with Ollama fallback) ────────────
 
+def _to_bullets(text: str) -> str:
+    """Convert text into bullet-point format."""
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return ""
+    bullets = []
+    for line in lines:
+        if line.startswith(("-", "•", "*", "1.", "2.", "3.")):
+            bullets.append(line)
+        else:
+            # Split by sentences if no bullets found
+            sentences = [s.strip() for s in line.split(".") if s.strip()]
+            for s in sentences:
+                bullets.append(f"• {s}")
+    return "\n".join(bullets)
+
+
 async def _summarize_text(text: str, settings) -> str:
     """Summarize text using OpenRouter (fallback to Ollama)."""
     from src.llm.openrouter_client import OpenRouterClient
@@ -622,18 +639,19 @@ async def _build_pending_review(
             "priority": task_info.get("priority") or "normal",
         }
 
+    line_source = f"line-{source_type}"
     return {
         "title": title,
         "content": content,
         "summary": summary,
         "scope": scope,
         "doc_type": doc_type,
-        "source_type": "line",
+        "source_type": line_source,
         "source_project": "line-integration",
         "oracle_name": "line-bot",
         "tags": tags,
         "concepts": concepts,
-        "metadata": metadata,
+        "metadata": {**metadata, "source_type": line_source},
         "reply_token": reply_token,
         "user_id": user_id,
         "chat_id": chat_id,
@@ -864,6 +882,7 @@ async def process_line_events(
                 display = review.get("summary") or review["content"][:300]
                 if len(review["content"]) > 300:
                     display += "..."
+                display = _to_bullets(display)
                 msg = (
                     f"📝 สรุป:\n{display}\n\n"
                     f"ต้องการบันทึกไหม? (ตอบ 'ใช่' หรือ 'ไม่')"
