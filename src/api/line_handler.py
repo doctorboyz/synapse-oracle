@@ -187,8 +187,14 @@ def _extract_task_info(text: str) -> dict | None:
             task["is_task"] = True
 
     # --- Explicit task markers ---
-    if re.search(r"\b(task|todo|action item|follow up|ต้องทำ|งาน|to do|todo)\b", lower):
+    # English: word boundaries work
+    if re.search(r"\b(task|todo|action item|follow up|to do)\b", lower):
         task["is_task"] = True
+    # Thai: check for standalone phrases (space-separated or sentence edges)
+    thai_markers = ["ต้องทำ", "งานที่ต้อง", "action item", "follow up"]
+    for marker in thai_markers:
+        if f" {marker}" in lower or lower.startswith(marker):
+            task["is_task"] = True
 
     return task if task["is_task"] else None
 
