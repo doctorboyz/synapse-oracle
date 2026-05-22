@@ -621,15 +621,16 @@ async def _build_pending_review(
         tags.append("task")
 
     metadata = {
-        "source_type": source_type,
-        "user_id": user_id,
-        "group_id": source.get("groupId", ""),
-        "room_id": source.get("roomId", ""),
+        "source": {
+            "platform": "line",
+            "type": source_type,
+            "id": source.get("groupId") or source.get("roomId") or user_id or "",
+            "user_id": user_id,
+        },
         "message_id": message_id,
         "message_type": msg_type,
         "reply_token": reply_token,
         "timestamp": timestamp,
-        "platform": "line",
     }
     if task_info:
         metadata["task"] = {
