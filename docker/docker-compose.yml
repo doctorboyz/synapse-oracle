@@ -1,8 +1,6 @@
-version: "3.9"
-
 # Synapse standalone compose — connects to shared infra-oracle network.
 # Prerequisite: infra-oracle docker-compose.yml must be running first
-#   (postgres, qdrant, redis, minio, etc.)
+#   (postgres, redis, minio, etc.)
 
 networks:
   server-network:
@@ -10,6 +8,7 @@ networks:
 
 services:
   synapse:
+    image: synapse
     build:
       context: ..
       dockerfile: docker/Dockerfile
@@ -25,4 +24,6 @@ services:
       - .env
     mem_limit: 384m
     depends_on: []
-    # Shared infra (postgres, qdrant) is expected to be up already.
+    volumes:
+      - /Users/doctorboyz:/Users/doctorboyz
+    # Shared infra (postgres) is expected to be up already.
