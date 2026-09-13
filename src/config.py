@@ -13,9 +13,12 @@ DEFAULT_CONFIG_PATH = Path.home() / ".synapse" / "config.yaml"
 
 @dataclass
 class Settings:
+    # SYNAPSE_DB_URL takes precedence: DATABASE_URL is a generic name many
+    # projects export, and a leaked one (e.g. from another project's .env)
+    # silently points us at a DB without pgvector. Dedicated var wins.
     database_url: str = field(default_factory=lambda: os.getenv(
-        "DATABASE_URL",
-        os.getenv("SYNAPSE_DB_URL", "postgresql://admin:88888888@localhost:5432/synapse")
+        "SYNAPSE_DB_URL",
+        os.getenv("DATABASE_URL", "postgresql://admin:88888888@localhost:5432/synapse")
     ))
     qdrant_url: str = field(default_factory=lambda: os.getenv(
         "QDRANT_URL", "http://localhost:6333"
