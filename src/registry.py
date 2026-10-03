@@ -18,27 +18,31 @@ PROJECT_PATTERNS = [
 DEFAULT_BACKUP_PATH = Path.home() / ".synapse" / "projects.json"
 
 
-def detect_scope(project_path: str) -> str:
-    """Auto-detect scope from project path. Returns last directory component, sanitized."""
+def detect_project_name(project_path: str) -> str:
+    """Auto-detect project name from path. Returns last directory component, sanitized."""
     path = Path(project_path).resolve()
-    scope = path.name.lower()
-    scope = re.sub(r"[^a-z0-9-]", "-", scope)
-    scope = re.sub(r"-+", "-", scope).strip("-")
-    return scope or "shared"
+    name = path.name.lower()
+    name = re.sub(r"[^a-z0-9-]", "-", name)
+    name = re.sub(r"-+", "-", name).strip("-")
+    return name or "shared"
 
 
-def validate_scope(scope: str) -> bool:
-    """Validate scope name: lowercase, alphanumeric, dashes only, 1-64 chars."""
-    return bool(re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", scope))
+def validate_project_name(name: str) -> bool:
+    """Validate project name: lowercase, alphanumeric, dashes only, 1-64 chars."""
+    return bool(re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", name))
+
+
+# Backward compat aliases
+detect_scope = detect_project_name
+validate_scope = validate_project_name
 
 
 async def register_project(pg: PgStore, project_path: str, scope: str | None = None) -> dict:
-    """Register a project with the vault. Auto-detect scope if not provided."""
-    if scope is None:
-        scope = detect_scope(project_path)
+    """Register a project with the vault. Auto-detect project name if not provided."""
+    project_name = scope or detect_project_name(project_path)
 
-    if not validate_scope(scope):
-        raise ValueError(f"Invalid scope name: {scope}")
+    if not validate_project_name(project_name):
+        raise ValueError(f"Invalid project name: {project_name}")
 
     async with pg.pool.acquire() as conn:
         await conn.execute(
@@ -46,10 +50,10 @@ async def register_project(pg: PgStore, project_path: str, scope: str | None = N
                VALUES ($1, $2, NOW())
                ON CONFLICT (scope) DO UPDATE SET project_path = $2, registered_at = NOW()
             """,
-            scope, str(Path(project_path).resolve()),
+            project_name, str(Path(project_path).resolve()),
         )
 
-    result = {"scope": scope, "project_path": project_path, "status": "registered"}
+    result = {"project_name": project_name, "project_path": project_path, "status": "registered"}
     await _save_registry_backup(pg)
     return result
 
@@ -63,7 +67,7 @@ async def unregister_project(pg: PgStore, scope: str) -> dict:
     deleted = "DELETE 1" in result
     if deleted:
         await _save_registry_backup(pg)
-    return {"scope": scope, "status": "unregistered" if deleted else "not_found"}
+    return {"project_name": scope, "status": "unregistered" if deleted else "not_found"}
 
 
 async def list_projects(pg: PgStore) -> list[dict]:
@@ -73,16 +77,20 @@ async def list_projects(pg: PgStore) -> list[dict]:
             "SELECT scope, project_path, registered_at FROM registered_projects ORDER BY scope"
         )
     return [
-        {"scope": r["scope"], "project_path": r["project_path"], "registered_at": str(r["registered_at"])}
+        {"project_name": r["scope"], "project_path": r["project_path"], "registered_at": str(r["registered_at"])}
         for r in rows
     ]
 
 
-async def get_all_scopes(pg: PgStore) -> list[str]:
-    """Get all registered scope names."""
+async def get_all_project_names(pg: PgStore) -> list[str]:
+    """Get all registered project names."""
     async with pg.pool.acquire() as conn:
         rows = await conn.fetch("SELECT scope FROM registered_projects ORDER BY scope")
     return [r["scope"] for r in rows]
+
+
+# Backward compat alias
+get_all_scopes = get_all_project_names
 
 
 # ─── Backup / Restore ────────────────────────────────────────────────────

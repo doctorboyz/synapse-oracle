@@ -7,7 +7,6 @@ from pathlib import Path
 
 from src.config import Settings
 from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder
 from src.ingest.oracle_paths import extract_metadata
 from src.ingest.push import Push
@@ -106,7 +105,7 @@ async def summarize_with_llm(content: str, title: str, embedder: OllamaEmbedder)
             f"Title: {title}\n\n"
             f"Content:\n{content[:8000]}"
         )
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 f"{settings.ollama_url}/api/generate",
                 json={
@@ -119,13 +118,13 @@ async def summarize_with_llm(content: str, title: str, embedder: OllamaEmbedder)
                 data = response.json()
                 return data.get("response", "").strip()
     except Exception as e:
-        log.warning("LLM summarization failed: %s", e)
+        log.warning("LLM summarization failed: %s: %s", type(e).__name__, e)
     return None
 
 
 async def init_scan(
     path: str,
-    scope: str | None = None,
+    tags: list[str] | None = None,
     dry_run: bool = False,
 ) -> dict:
     """Scan directory, extract metadata, optionally summarize with LLM, push to vault.
@@ -145,27 +144,21 @@ async def init_scan(
     pg = PgStore(settings)
     await pg.connect()
 
-    qdrant = None
-    try:
-        qdrant = QdrantStore(settings)
-        await qdrant.connect()
-    except Exception:
-        log.warning("Qdrant not available, FTS-only mode")
-
     embedder = None
     try:
         embedder = OllamaEmbedder(settings)
     except Exception:
         log.warning("Ollama not available, no LLM summarization")
 
-    push = Push(pg, qdrant, embedder)
+    push = Push(pg, embedder)
 
     results = {
         "total_files": len(files),
         "indexed": 0,
         "duplicates": 0,
         "errors": 0,
-        "llm_summarized": 0,
+        "superseded": 0,
+        "skipped_unchanged": 0,
         "files": [],
     }
 
@@ -190,57 +183,83 @@ async def init_scan(
 
         # Extract metadata from oracle path
         metadata = extract_metadata(str(fpath), str(root))
-        file_scope = scope or metadata.get("scope", "shared")
+        file_tags = tags or metadata.get("tags", [])
         doc_type = metadata.get("doc_type", "note")
         oracle_name = metadata.get("oracle_name")
         brain_path = metadata.get("brain_path")
         brain_tier = metadata.get("brain_tier")
 
         title = fpath.stem.replace("-", " ").replace("_", " ").title()
+        content_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+        source_project = oracle_name or (file_tags[0] if file_tags else None)
 
-        # LLM summarization for long content
-        final_content = content
-        if embedder and len(content) > 2000:
-            summary = await summarize_with_llm(content, title, embedder)
-            if summary:
-                final_content = summary
-                results["llm_summarized"] += 1
-                file_info["llm_summarized"] = True
+        # Check if file already indexed — skip if unchanged, supersede if updated
+        existing = await pg.find_by_source_file(rel_path, source_project or "", include_hash=True)
+        if existing:
+            if existing.get("content_hash") == content_hash:
+                results["skipped_unchanged"] += 1
+                file_info["status"] = "skipped_unchanged"
+                file_info["id"] = existing["id"]
+                results["files"].append(file_info)
+                continue
+            else:
+                log.info("File updated, superseding: %s (old=%s)", rel_path, existing["id"])
 
         if dry_run:
             file_info["status"] = "dry_run"
-            file_info["scope"] = file_scope
+            file_info["tags"] = file_tags
             file_info["doc_type"] = doc_type
             file_info["title"] = title
-            file_info["content_length"] = len(final_content)
+            file_info["content_length"] = len(content)
             results["files"].append(file_info)
             continue
 
         try:
             concepts = extract_concepts(content)
-            result = await push.push_text(
-                title=title,
-                content=final_content,
-                scope=file_scope,
-                doc_type=doc_type,
-                source_file=rel_path,
-                source_type="init_scan",
-                source_project=file_scope,
-                oracle_name=oracle_name,
-                brain_path=brain_path,
-                brain_tier=brain_tier,
-                trace_content=content,
-                concepts=concepts,
-            )
-            status = result.get("status", "unknown")
-            file_info["status"] = status
-            file_info["id"] = result.get("id")
-            file_info["scope"] = result.get("scope")
-
-            if status == "duplicate":
-                results["duplicates"] += 1
+            if existing:
+                result = await push.supersede_and_reindex(
+                    old_id=existing["id"],
+                    content=content,
+                    title=title,
+                    doc_type=doc_type,
+                    source_file=rel_path,
+                    source_project=source_project,
+                    oracle_name=oracle_name,
+                    brain_path=brain_path,
+                    brain_tier=brain_tier,
+                    concepts=concepts,
+                    tags=file_tags,
+                )
+                status = result.get("status", "unknown")
+                file_info["status"] = status
+                file_info["id"] = result.get("id")
+                file_info["tags"] = result.get("tags")
+                results["superseded"] += 1
             else:
-                results["indexed"] += 1
+                result = await push.push_text(
+                    title=title,
+                    content=content,
+                    doc_type=doc_type,
+                    source_file=rel_path,
+                    source_type="init_scan",
+                    source_project=source_project,
+                    oracle_name=oracle_name,
+                    brain_path=brain_path,
+                    brain_tier=brain_tier,
+                    trace_content=content,
+                    concepts=concepts,
+                    tags=file_tags,
+                    skip_semantic_dedup=True,
+                )
+                status = result.get("status", "unknown")
+                file_info["status"] = status
+                file_info["id"] = result.get("id")
+                file_info["tags"] = result.get("tags")
+
+                if status == "duplicate":
+                    results["duplicates"] += 1
+                else:
+                    results["indexed"] += 1
         except Exception as e:
             log.error("Failed to push %s: %s", rel_path, e)
             results["errors"] += 1
@@ -251,7 +270,5 @@ async def init_scan(
 
     # Cleanup
     await pg.close()
-    if qdrant:
-        await qdrant.close()
 
     return results

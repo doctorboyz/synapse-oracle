@@ -14,13 +14,13 @@ class SearchCache:
         self._cache: OrderedDict[str, tuple] = OrderedDict()
         self._lock = Lock()
 
-    def _make_key(self, query: str, scope: str | None, mode: str, limit: int) -> str:
-        scope_str = scope or "*"
-        return f"{query}||{scope_str}||{mode}||{limit}"
+    def _make_key(self, query: str, tags: list[str] | None, mode: str, limit: int) -> str:
+        tags_str = ",".join(sorted(tags)) if tags else "*"
+        return f"{query}||{tags_str}||{mode}||{limit}"
 
-    def get(self, query: str, scope: str | None = None, mode: str = "hybrid",
+    def get(self, query: str, tags: list[str] | None = None, mode: str = "hybrid",
             limit: int = 10) -> list | None:
-        key = self._make_key(query, scope, mode, limit)
+        key = self._make_key(query, tags, mode, limit)
         with self._lock:
             if key not in self._cache:
                 return None
@@ -31,9 +31,9 @@ class SearchCache:
             self._cache.move_to_end(key)
             return results
 
-    def put(self, query: str, results: list, scope: str | None = None,
+    def put(self, query: str, results: list, tags: list[str] | None = None,
             mode: str = "hybrid", limit: int = 10) -> None:
-        key = self._make_key(query, scope, mode, limit)
+        key = self._make_key(query, tags, mode, limit)
         with self._lock:
             if key in self._cache:
                 del self._cache[key]
@@ -41,21 +41,22 @@ class SearchCache:
             while len(self._cache) > self._max_size:
                 self._cache.popitem(last=False)
 
-    def invalidate(self, query: str | None = None, scope: str | None = None) -> int:
+    def invalidate(self, query: str | None = None, tags: list[str] | None = None) -> int:
         with self._lock:
-            if query is None and scope is None:
+            if query is None and tags is None:
                 count = len(self._cache)
                 self._cache.clear()
                 return count
             keys_to_remove = []
+            tag_str = ",".join(sorted(tags)) if tags else None
             for key in self._cache:
                 parts = key.split("||")
                 if len(parts) >= 2:
                     key_query = parts[0]
-                    key_scope = parts[1]
+                    key_tags = parts[1]
                     if query and query != key_query:
                         continue
-                    if scope and scope != key_scope and key_scope != "*":
+                    if tag_str and tag_str != key_tags and key_tags != "*":
                         continue
                     keys_to_remove.append(key)
             for key in keys_to_remove:

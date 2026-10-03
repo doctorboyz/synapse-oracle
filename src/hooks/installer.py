@@ -2,15 +2,13 @@
 
 import json
 import logging
-import sys
 from pathlib import Path
 
 log = logging.getLogger("synapse.hooks")
 
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
-# Marker strings for idempotency checks
-SYNAPSE_INGEST_MARKER = "src.ingest.hook_handler"
+# Marker string for idempotency checks
 SYNAPSE_CONTEXT_MARKER = "synapse-context-inject"
 
 
@@ -48,21 +46,6 @@ def find_hook_entry(hooks_list: list, marker: str) -> dict | None:
     return None
 
 
-def build_ingest_hook_entry(python_path: str | None = None) -> dict:
-    """Build the PostToolUse auto-ingest hook entry."""
-    python = python_path or sys.executable
-    return {
-        "matcher": "Write|Edit|MultiEdit",
-        "hooks": [
-            {
-                "type": "command",
-                "command": f'{python} -m src.ingest.hook_handler "$CLAUDE_CODE_FILEPATH"',
-                "timeout": 30,
-            }
-        ],
-    }
-
-
 def build_context_inject_hook_entry(script_path: str | None = None) -> dict:
     """Build the PreToolUse context injection hook entry."""
     if script_path is None:
@@ -81,7 +64,6 @@ def build_context_inject_hook_entry(script_path: str | None = None) -> dict:
 
 def install_hooks(
     settings_path: Path | None = None,
-    python_path: str | None = None,
     script_path: str | None = None,
     dry_run: bool = False,
 ) -> dict:
@@ -94,22 +76,9 @@ def install_hooks(
 
     results = {
         "settings_path": str(path),
-        "ingest_hook": "unchanged",
         "context_hook": "unchanged",
         "changes": [],
     }
-
-    # PostToolUse: auto-ingest
-    post_hooks = settings["hooks"].setdefault("PostToolUse", [])
-    existing_ingest = find_hook_entry(post_hooks, SYNAPSE_INGEST_MARKER)
-
-    if existing_ingest is None:
-        ingest_entry = build_ingest_hook_entry(python_path)
-        post_hooks.append(ingest_entry)
-        results["ingest_hook"] = "installed"
-        results["changes"].append("Added PostToolUse auto-ingest hook")
-    else:
-        results["ingest_hook"] = "already_exists"
 
     # PreToolUse: context injection
     pre_hooks = settings["hooks"].setdefault("PreToolUse", [])

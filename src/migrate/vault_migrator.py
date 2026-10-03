@@ -13,16 +13,14 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from datetime import datetime
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.config import Settings
 from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
-from src.ingest.oracle_paths import extract_metadata, VALID_DOC_TYPES
+from src.ingest.oracle_paths import extract_metadata
 
 log = logging.getLogger("synapse.migrate")
 
@@ -118,21 +116,15 @@ async def main():
 
     settings = Settings()
     pg = PgStore(settings)
-    qdrant = QdrantStore(settings)
     embedder = OllamaEmbedder(settings)
 
     await pg.connect()
     await pg.init_schema()
-    try:
-        await qdrant.connect()
-    except Exception:
-        log.warning("Qdrant unavailable — vectors skipped")
-        qdrant = None
 
     before = await pg.stats()
     print(f"\nBefore: {before['total_documents']} docs in vault\n")
 
-    push = Push(pg, qdrant, embedder)
+    push = Push(pg, embedder)
     stats = await migrate(push, repo_filter=args.repo, dry_run=args.dry_run)
 
     after = await pg.stats()

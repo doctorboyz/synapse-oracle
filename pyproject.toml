@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse"
-version = "3.0.0"
-description = "Synapse — Hybrid Knowledge Framework v3 (PostgreSQL + Qdrant)"
+version = "4.0.0"
+description = "Synapse — Knowledge Framework v4 (PostgreSQL pgvector)"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "asyncpg>=0.30.0",
-    "qdrant-client>=1.12.0",
+    "pgvector>=0.4.0",
     "httpx>=0.27.0",
     "fastapi>=0.115.0",
     "uvicorn>=0.34.0",

@@ -41,7 +41,6 @@ def validate_all_settings(settings, allow_docker: bool = False) -> list[str]:
 
     for url_name, url_value in [
         ("database_url", settings.database_url),
-        ("qdrant_url", settings.qdrant_url),
         ("ollama_url", settings.ollama_url),
     ]:
         violations.extend(validate_local_url(url_value, allow_docker=allow_docker))

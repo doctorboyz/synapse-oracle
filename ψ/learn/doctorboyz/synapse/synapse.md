@@ -6,13 +6,6 @@
 
 ## Explorations
 
-### 2026-05-05 2120 (deep)
-- [2026-05-05/2120_ARCHITECTURE.md|Architecture]
-- [2026-05-05/2120_CODE-SNIPPETS.md|Code Snippets]
-- [2026-05-05/2120_QUICK-REFERENCE.md|Quick Reference]
-- [2026-05-05/2120_TESTING.md|Testing]
-- [2026-05-05/2120_API-SURFACE.md|API Surface]
-
 ### 2026-05-14 1503 (deep)
 - [2026-05-14/1503_ARCHITECTURE.md|Architecture]
 - [2026-05-14/1503_CODE-SNIPPETS.md|Code Snippets]

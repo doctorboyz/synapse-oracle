@@ -1,7 +1,6 @@
 """OpenRouter client — cheap, reliable LLM with Ollama fallback."""
 
 import base64
-import json
 import logging
 from typing import Any
 

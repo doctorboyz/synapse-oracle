@@ -1,10 +1,8 @@
-"""Hybrid search — Qdrant dense + PostgreSQL tsvector → Reciprocal Rank Fusion."""
+"""Hybrid search — pgvector dense + PostgreSQL tsvector → Reciprocal Rank Fusion."""
 
 import logging
-from typing import Optional
 
 from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder, EmbeddingError
 
 log = logging.getLogger("synapse.retrieve.hybrid")
@@ -31,11 +29,16 @@ def reciprocal_rank_fusion(
                 doc_info[doc_id] = {
                     "id": doc_id,
                     "title": doc.get("title", ""),
-                    "scope": doc.get("scope", "shared"),
+                    "tags": list(doc.get("tags") or []),
                     "doc_type": doc.get("doc_type", ""),
                     "oracle_name": doc.get("oracle_name"),
                     "source_project": doc.get("source_project"),
                 }
+            else:
+                # Merge tags from both sources
+                existing_tags = set(doc_info[doc_id].get("tags") or [])
+                new_tags = doc.get("tags") or []
+                doc_info[doc_id]["tags"] = list(existing_tags | set(new_tags))
 
     return [
         {**doc_info[doc_id], "score": score}
@@ -44,14 +47,12 @@ def reciprocal_rank_fusion(
 
 
 class HybridSearch:
-    """Qdrant dense + PostgreSQL tsvector → RRF fusion."""
+    """pgvector dense + PostgreSQL tsvector → RRF fusion."""
 
-    def __init__(self, pg: PgStore, qdrant: QdrantStore | None = None,
-                 embedder: OllamaEmbedder | None = None,
+    def __init__(self, pg: PgStore, embedder: OllamaEmbedder | None = None,
                  weights: list[float] | None = None, rrf_k: int = 60,
                  cache=None):
         self.pg = pg
-        self.qdrant = qdrant
         self.embedder = embedder
         self._weights = weights or [0.6, 0.4]
         self._rrf_k = rrf_k
@@ -65,52 +66,54 @@ class HybridSearch:
         oracle: str | None = None,
         source_project: str | None = None,
         concepts: list[str] | None = None,
+        tags: list[str] | None = None,
         limit: int = 10,
         mode: str = "hybrid",
     ) -> list[dict]:
         # Check cache first
         if self._cache:
-            cached = self._cache.get(query, scope=scope, mode=mode, limit=limit)
+            cached = self._cache.get(query, tags=tags, mode=mode, limit=limit)
             if cached is not None:
                 return cached
+
         if mode == "dense":
-            if not self.qdrant or not self.embedder:
-                raise SearchError("Dense search requires Qdrant and OllamaEmbedder")
+            if not self.embedder:
+                raise SearchError("Dense search requires OllamaEmbedder")
             vector = await self.embedder.embed(query)
-            return await self.qdrant.search(
+            return await self.pg.search_similar(
                 vector, scope=scope, doc_type=doc_type, oracle=oracle,
-                source_project=source_project, concepts=concepts, limit=limit,
+                source_project=source_project, tags=tags, limit=limit,
             )
 
         if mode == "fts":
             return await self.pg.search_fts(
                 query, scope=scope, doc_type=doc_type, oracle=oracle,
-                source_project=source_project, limit=limit,
+                source_project=source_project, tags=tags, limit=limit,
             )
 
-        # Hybrid: both + RRF
-        if not self.qdrant or not self.embedder:
+        # Hybrid: dense + FTS via RRF
+        if not self.embedder:
             return await self.pg.search_fts(
                 query, scope=scope, doc_type=doc_type, oracle=oracle,
-                source_project=source_project, limit=limit,
+                source_project=source_project, tags=tags, limit=limit,
             )
 
         try:
             vector = await self.embedder.embed(query)
-            dense_results = await self.qdrant.search(
+            dense_results = await self.pg.search_similar(
                 vector, scope=scope, doc_type=doc_type, oracle=oracle,
-                source_project=source_project, concepts=concepts, limit=limit * 2,
+                source_project=source_project, tags=tags, limit=limit * 2,
             )
         except EmbeddingError as e:
             log.warning("Dense search failed, falling back to FTS: %s", e)
             return await self.pg.search_fts(
                 query, scope=scope, doc_type=doc_type, oracle=oracle,
-                source_project=source_project, limit=limit,
+                source_project=source_project, tags=tags, limit=limit,
             )
 
         fts_results = await self.pg.search_fts(
             query, scope=scope, doc_type=doc_type, oracle=oracle,
-            source_project=source_project, limit=limit * 2,
+            source_project=source_project, tags=tags, limit=limit * 2,
         )
 
         if not dense_results and not fts_results:
@@ -127,9 +130,8 @@ class HybridSearch:
         )
         results = merged[:limit]
 
-        # Cache results
         if self._cache:
-            self._cache.put(query, results, scope=scope, mode=mode, limit=limit)
+            self._cache.put(query, results, tags=tags, mode=mode, limit=limit)
 
         return results
 

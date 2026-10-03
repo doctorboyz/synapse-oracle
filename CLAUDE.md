@@ -121,7 +121,7 @@ pytest tests/ -v
 
 ## MCP Tools
 
-synapse_search, synapse_push, synapse_supersede, synapse_trace, synapse_trace_chain, synapse_concepts, synapse_get, synapse_scope, synapse_stats, synapse_list, synapse_register, synapse_unregister, synapse_projects, synapse_search_cross
+synapse_search, synapse_push, synapse_supersede, synapse_trace, synapse_trace_chain, synapse_concepts, synapse_get, synapse_scope, synapse_stats, synapse_list, synapse_register, synapse_unregister, synapse_projects, synapse_search_cross, synapse_write_to_obsidian
 
 ## 3-Way Access
 
@@ -153,13 +153,14 @@ When asked a question or performing a task:
 - `src/db/qdrant_store.py` — Qdrant vector operations
 - `src/db/schema.sql` — PostgreSQL schema (including registered_projects table)
 - `src/embed/ollama.py` — Async embedding with retry + batching
-- `src/ingest/push.py` — Push pipeline (dual-store write, dedup)
+- `src/ingest/push.py` — Push pipeline (dual-store write, dedup, supersede_and_reindex)
+- `src/ingest/obsidian_writer.py` — Write docs to Obsidian vault (.md + YAML + [[wikilinks]])
 - `src/ingest/oracle_paths.py` — κ/ψ path → doc_type, oracle_name, brain_tier
 - `src/ingest/hook_handler.py` — PostToolUse auto-ingest for oracle brain files
 - `src/ingest/init_scan.py` — Directory scan + LLM summarization for `synapse init`
 - `src/retrieve/hybrid_search.py` — RRF fusion with FTS fallback + cross-project search
 - `src/reconcile/` — Defrag (compact duplicates) + Detox (LLM conflict detection)
-- `src/mcp/server.py` — 14 MCP tools via stdio
+- `src/mcp/server.py` — 15 MCP tools via stdio
 - `src/api/routes.py` — HTTP API (18 endpoints)
 
 ## Design Principles
@@ -174,6 +175,7 @@ When asked a question or performing a task:
 8. Search cache — LRU + TTL for repeated queries
 9. Cross-project search — search across registered scopes
 10. Daemon lifecycle — PID file, SIGTERM/SIGHUP, graceful shutdown
+11. **Obsidian Bidirectional** — Synapse อ่านจากและเขียนลง Obsidian vault; Obsidian จัดการไฟล์, Synapse จัดการ database
 
 ## Roadmap
 
@@ -188,6 +190,8 @@ When asked a question or performing a task:
 - [x] Daemon lifecycle — PID file, signal handling, start/stop/status
 - [x] Config hot-reload — YAML config + SIGHUP reload
 - [x] Health expansion — liveness, readiness, uptime, cache stats
+- [x] **Obsidian Bidirectional Integration** — เขียน .md พร้อม [[wikilinks]], ตรวจจับไฟล์อัปเดต, supersede + re-index, auto-write หลัง scan
+- [x] MCP: `synapse_write_to_obsidian` — เขียน docs ลง Obsidian vault จาก Claude Code
 
 ## Branch History
 

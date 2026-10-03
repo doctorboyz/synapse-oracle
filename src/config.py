@@ -20,12 +20,6 @@ class Settings:
         "SYNAPSE_DB_URL",
         os.getenv("DATABASE_URL", "postgresql://admin:88888888@localhost:5432/synapse")
     ))
-    qdrant_url: str = field(default_factory=lambda: os.getenv(
-        "QDRANT_URL", "http://localhost:6333"
-    ))
-    qdrant_collection: str = field(default_factory=lambda: os.getenv(
-        "SYNAPSE_QDRANT_COLLECTION", "synapse_vectors"
-    ))
     ollama_url: str = field(default_factory=lambda: os.getenv(
         "OLLAMA_URL", "http://localhost:11434"
     ))
@@ -79,6 +73,9 @@ class Settings:
     ))
     web_search_provider: str = field(default_factory=lambda: os.getenv(
         "WEB_SEARCH_PROVIDER", "serper"
+    ))
+    obsidian_vault_path: str = field(default_factory=lambda: os.getenv(
+        "OBSIDIAN_VAULT_PATH", ""
     ))
     topic_monitor_interval: int = field(default_factory=lambda: int(os.getenv(
         "SYNAPSE_TOPIC_INTERVAL", "3600"

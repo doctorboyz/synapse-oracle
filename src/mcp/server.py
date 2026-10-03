@@ -10,10 +10,9 @@ from mcp.types import TextContent, Tool
 
 from src.config import Settings
 from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
-from src.ingest.oracle_paths import validate_doc_type, validate_trace_relation
+from src.ingest.oracle_paths import validate_trace_relation
 from src.retrieve.hybrid_search import HybridSearch
 
 log = logging.getLogger("synapse.mcp")
@@ -26,7 +25,8 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query"},
-                "scope": {"type": "string", "description": "Filter to scope"},
+                "scope": {"type": "string", "description": "Filter to scope (deprecated — use tags)"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter by tags"},
                 "doc_type": {"type": "string", "description": "Filter by doc_type"},
                 "oracle": {"type": "string", "description": "Filter by oracle name"},
                 "source_project": {"type": "string", "description": "Filter by source project"},
@@ -45,13 +45,13 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "title": {"type": "string", "description": "Document title"},
                 "content": {"type": "string", "description": "Document content (markdown)"},
-                "scope": {"type": "string", "default": "shared"},
+                "scope": {"type": "string", "description": "Deprecated — use tags"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for classification (e.g. ['arra', 'python'])"},
                 "doc_type": {"type": "string", "default": "learning",
                              "description": "One of: learning, pattern, retro, reference, handoff, protocol, wisdom, instinct, log, note"},
                 "source_file": {"type": "string", "description": "Original file path"},
                 "source_project": {"type": "string", "description": "Project that sent this knowledge"},
                 "concepts": {"type": "array", "items": {"type": "string"}},
-                "tags": {"type": "array", "items": {"type": "string"}},
                 "oracle_name": {"type": "string"},
                 "brain_path": {"type": "string"},
                 "brain_tier": {"type": "string"},
@@ -126,8 +126,19 @@ TOOL_DEFINITIONS = [
     ),
     Tool(
         name="synapse_scope",
-        description="List all knowledge scopes with document counts.",
+        description="List all knowledge scopes with document counts (deprecated — use synapse_tags).",
         inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="synapse_tags",
+        description="List or search tags across the knowledge vault with document counts.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "description": "Search tags by name"},
+                "limit": {"type": "integer", "default": 50},
+            },
+        },
     ),
     Tool(
         name="synapse_stats",
@@ -140,7 +151,8 @@ TOOL_DEFINITIONS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "scope": {"type": "string"},
+                "scope": {"type": "string", "description": "Filter by scope (deprecated)"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter by tags"},
                 "doc_type": {"type": "string"},
                 "oracle": {"type": "string"},
                 "limit": {"type": "integer", "default": 20},
@@ -156,7 +168,7 @@ TOOL_DEFINITIONS = [
             "type": "object",
             "properties": {
                 "project_path": {"type": "string", "description": "Path to the project directory"},
-                "scope": {"type": "string", "description": "Scope name (default: auto-detect from path)"},
+                "project_name": {"type": "string", "description": "Project name (default: auto-detect from path)"},
             },
             "required": ["project_path"],
         },
@@ -167,9 +179,9 @@ TOOL_DEFINITIONS = [
         inputSchema={
             "type": "object",
             "properties": {
-                "scope": {"type": "string", "description": "Scope name to unregister"},
+                "project_name": {"type": "string", "description": "Project name to unregister"},
             },
-            "required": ["scope"],
+            "required": ["project_name"],
         },
     ),
     Tool(
@@ -201,21 +213,49 @@ TOOL_DEFINITIONS = [
             },
         },
     ),
+    Tool(
+        name="synapse_write_to_obsidian",
+        description="Write Synapse documents to Obsidian vault as .md files with YAML frontmatter and [[wikilinks]]. Use doc_id for a single doc, or query+tags+limit to write search results.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "doc_id": {"type": "string", "description": "UUID of a single document to write"},
+                "query": {"type": "string", "description": "Search query — write top N matching docs"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Filter search by tags"},
+                "limit": {"type": "integer", "default": 5, "description": "Max docs when using query mode"},
+                "vault_path": {"type": "string", "description": "Path to Obsidian vault root (overrides config)"},
+                "subdir": {"type": "string", "description": "Optional subdirectory inside the vault"},
+            },
+        },
+    ),
+    Tool(
+        name="synapse_ingest_session",
+        description="Ingest knowledge from a Claude Code session or any source. Accepts title, content, tags, concepts, and source info. Stores via push pipeline with optional tag rule application.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "content": {"type": "string", "description": "Document content"},
+                "doc_type": {"type": "string", "default": "learning", "description": "Document type: learning, note, task, etc."},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for classification and rule activation"},
+                "concepts": {"type": "array", "items": {"type": "string"}, "description": "Key concepts"},
+                "source_type": {"type": "string", "default": "claude", "description": "Source of the content"},
+                "source_project": {"type": "string", "description": "Project or repo name"},
+                "oracle_name": {"type": "string", "description": "Oracle name if applicable"},
+                "apply_tag_rules": {"type": "boolean", "default": True, "description": "Apply matching tag rules after ingest"},
+            },
+            "required": ["title", "content"],
+        },
+    ),
 ]
 
 
 async def create_app(settings: Settings | None = None) -> Server:
     settings = settings or Settings()
     pg = PgStore(settings)
-    qdrant = QdrantStore(settings)
 
     await pg.connect()
     await pg.init_schema()
-    try:
-        await qdrant.connect()
-    except Exception:
-        log.warning("Qdrant not available, falling back to FTS-only mode")
-        qdrant = None
 
     embedder = None
     try:
@@ -223,8 +263,8 @@ async def create_app(settings: Settings | None = None) -> Server:
     except Exception:
         log.warning("Ollama not available, running without embeddings")
 
-    push = Push(pg, qdrant, embedder)
-    search = HybridSearch(pg, qdrant, embedder)
+    push = Push(pg, embedder)
+    search = HybridSearch(pg, embedder)
 
     server = Server("synapse")
 
@@ -236,28 +276,29 @@ async def create_app(settings: Settings | None = None) -> Server:
     async def call_tool(name: str, arguments: dict):
         try:
             if name == "synapse_search":
+                tags = arguments.get("tags") or ([arguments.get("scope")] if arguments.get("scope") else None)
                 results = await search.search(
                     query=arguments["query"],
-                    scope=arguments.get("scope"),
                     doc_type=arguments.get("doc_type"),
                     oracle=arguments.get("oracle"),
                     source_project=arguments.get("source_project"),
                     concepts=arguments.get("concepts"),
+                    tags=tags,
                     limit=arguments.get("limit", 10),
                     mode=arguments.get("mode", "hybrid"),
                 )
                 return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
             elif name == "synapse_push":
+                tags = arguments.get("tags") or ([arguments.get("scope")] if arguments.get("scope") else None)
                 result = await push.push_text(
                     title=arguments["title"],
                     content=arguments["content"],
-                    scope=arguments.get("scope", "shared"),
                     doc_type=arguments.get("doc_type", "learning"),
                     source_file=arguments.get("source_file"),
-                    source_project=arguments.get("source_project"),
+                    source_project=arguments.get("source_project") or arguments.get("scope"),
                     concepts=arguments.get("concepts"),
-                    tags=arguments.get("tags"),
+                    tags=tags,
                     oracle_name=arguments.get("oracle_name"),
                     brain_path=arguments.get("brain_path"),
                     brain_tier=arguments.get("brain_tier"),
@@ -271,8 +312,7 @@ async def create_app(settings: Settings | None = None) -> Server:
                     reason=arguments.get("reason", "updated"),
                     new_title=arguments.get("new_title"),
                 )
-                if qdrant:
-                    await qdrant.mark_superseded(arguments["old_id"])
+                await pg.clear_embedding(arguments["old_id"])
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "synapse_trace":
@@ -314,15 +354,23 @@ async def create_app(settings: Settings | None = None) -> Server:
                 scopes = await pg.list_scopes()
                 return [TextContent(type="text", text=json.dumps(scopes, indent=2))]
 
+            elif name == "synapse_tags":
+                results = await pg.list_tags(
+                    search=arguments.get("search"),
+                    limit=arguments.get("limit", 50),
+                )
+                return [TextContent(type="text", text=json.dumps(results, indent=2))]
+
             elif name == "synapse_stats":
                 stats = await pg.stats()
                 return [TextContent(type="text", text=json.dumps(stats, indent=2, default=str))]
 
             elif name == "synapse_list":
+                tags = arguments.get("tags") or ([arguments.get("scope")] if arguments.get("scope") else None)
                 docs = await pg.list_docs(
-                    scope=arguments.get("scope"),
                     doc_type=arguments.get("doc_type"),
                     oracle=arguments.get("oracle"),
+                    tags=tags,
                     limit=arguments.get("limit", 20),
                     offset=arguments.get("offset", 0),
                     order=arguments.get("order", "newest"),
@@ -332,13 +380,16 @@ async def create_app(settings: Settings | None = None) -> Server:
             elif name == "synapse_register":
                 from src.registry import register_project
                 result = await register_project(
-                    pg, arguments["project_path"], scope=arguments.get("scope"),
+                    pg, arguments["project_path"],
+                    scope=arguments.get("project_name") or arguments.get("scope"),
                 )
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "synapse_unregister":
                 from src.registry import unregister_project
-                result = await unregister_project(pg, arguments["scope"])
+                result = await unregister_project(
+                    pg, arguments.get("project_name") or arguments.get("scope")
+                )
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "synapse_projects":
@@ -355,9 +406,73 @@ async def create_app(settings: Settings | None = None) -> Server:
                 )
                 return [TextContent(type="text", text=json.dumps(results, indent=2))]
 
+            elif name == "synapse_fix_doctype":
+                result = await pg.fix_doc_types(
+                    from_type=arguments.get("from_type", "task"),
+                    to_type=arguments.get("to_type", "note"),
+                    source_type=arguments.get("source_type"),
+                    dry_run=arguments.get("dry_run", True),
+                )
+                return [TextContent(type="text", text=json.dumps(result, indent=2, default=str))]
+
             elif name == "synapse_reconcile_log":
                 logs = await pg.list_reconcile_log(limit=arguments.get("limit", 20))
                 return [TextContent(type="text", text=json.dumps(logs, indent=2, default=str))]
+
+            elif name == "synapse_write_to_obsidian":
+                from pathlib import Path
+                from src.ingest.obsidian_writer import write_document_to_obsidian, write_search_results_to_obsidian
+
+                vault_path = arguments.get("vault_path") or settings.obsidian_vault_path
+                if not vault_path:
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": "No vault_path provided and OBSIDIAN_VAULT_PATH not configured"}))]
+                if not Path(vault_path).exists():
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": f"Vault path does not exist: {vault_path}"}))]
+
+                subdir = arguments.get("subdir", "")
+                doc_id = arguments.get("doc_id")
+
+                if doc_id:
+                    result = await write_document_to_obsidian(pg, doc_id, vault_path, subdir)
+                elif arguments.get("query"):
+                    results = await search.search(
+                        query=arguments["query"],
+                        tags=arguments.get("tags"),
+                        limit=arguments.get("limit", 5),
+                        mode="hybrid",
+                    )
+                    result = await write_search_results_to_obsidian(pg, results, vault_path, subdir)
+                else:
+                    return [TextContent(type="text", text=json.dumps(
+                        {"error": "Provide doc_id or query"}))]
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
+
+            elif name == "synapse_ingest_session":
+                result = await push.push_text(
+                    title=arguments["title"],
+                    content=arguments["content"],
+                    doc_type=arguments.get("doc_type", "learning"),
+                    source_type=arguments.get("source_type", "claude"),
+                    source_project=arguments.get("source_project"),
+                    oracle_name=arguments.get("oracle_name"),
+                    tags=arguments.get("tags"),
+                    concepts=arguments.get("concepts"),
+                )
+                # Apply tag rules if requested
+                doc_id = result.get("id", "")
+                tags = arguments.get("tags", [])
+                if doc_id and tags and arguments.get("apply_tag_rules", True):
+                    try:
+                        from src.assistant.tag_rules import apply_tag_rules
+                        actions = await apply_tag_rules(
+                            pg, doc_id, tags, content=arguments["content"],
+                        )
+                        result["tag_rule_actions"] = actions
+                    except Exception as e:
+                        log.warning("Tag rules failed for ingest_session: %s", e)
+                return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             else:
                 return [TextContent(type="text", text=json.dumps({"error": f"Unknown tool: {name}"}))]

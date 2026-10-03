@@ -20,7 +20,7 @@ BENCHMARK_QUERIES = [
     {"query": "oracle principles nothing deleted", "expected": "oracle-awakening"},
     {"query": "knowledge framework hybrid search", "expected": "knowledge-framework"},
     {"query": "retrospective session format", "expected": "infrastructure-rebuild"},
-    {"query": "qdrant vector database", "expected": "docker-infrastructure"},
+    {"query": "pgvector embedding search", "expected": "docker-infrastructure"},
     {"query": "openkb knowledge base", "expected": "knowledge-framework"},
     {"query": "minio s3 storage", "expected": "docker-infrastructure"},
     {"query": "redis cache queue", "expected": "infrastructure-rebuild"},

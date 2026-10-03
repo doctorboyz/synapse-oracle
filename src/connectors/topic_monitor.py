@@ -4,10 +4,7 @@ Background task that reads search_topics table, searches web/social,
 and pushes new results to synapse vault.
 """
 
-import asyncio
-import hashlib
 import logging
-from datetime import datetime, timezone
 
 from src.db.pg_store import PgStore
 from src.ingest.push import Push
@@ -54,9 +51,10 @@ async def run_topic_monitor(
         scope = topic_row["scope"]
         topic = topic_row["topic"]
         source = topic_row["source"]
+        tags = [scope] if scope else []
 
         stats["topics_checked"] += 1
-        log.info("Checking topic: %s (source=%s, scope=%s)", topic, source, scope)
+        log.info("Checking topic: %s (source=%s, tags=%s)", topic, source, tags)
 
         try:
             results = []
@@ -97,7 +95,7 @@ async def run_topic_monitor(
                 result_push = await push.push_text(
                     title=title[:200],
                     content=content,
-                    scope=scope,
+                    tags=tags,
                     doc_type="note",
                     source_type=source,
                     source_file=url,

@@ -39,11 +39,20 @@ async def pg_store():
 @pytest_asyncio.fixture
 async def clean_pg(pg_store):
     async with pg_store.pool.acquire() as conn:
+        # Clear self-referencing FK first to avoid FK violations
+        await conn.execute("UPDATE knowledge_documents SET superseded_by = NULL")
         await conn.execute("DELETE FROM document_concepts")
+        await conn.execute("DELETE FROM document_tags")
         await conn.execute("DELETE FROM trace")
         await conn.execute("DELETE FROM supersede_log")
+        await conn.execute("DELETE FROM document_chunks")
+        await conn.execute("DELETE FROM alert_log")
+        await conn.execute("DELETE FROM scheduled_tasks")
+        await conn.execute("DELETE FROM tag_rules")
+        await conn.execute("DELETE FROM obsidian_sync_log")
         await conn.execute("DELETE FROM knowledge_documents")
         await conn.execute("DELETE FROM concepts")
+        await conn.execute("DELETE FROM tags")
         await conn.execute("DELETE FROM scope_registry")
         await conn.execute("DELETE FROM search_topics")
         await conn.execute("DELETE FROM reconcile_log")
@@ -52,23 +61,18 @@ async def clean_pg(pg_store):
 
 
 @pytest.fixture
-def qdrant_store():
-    return None
-
-
-@pytest.fixture
 def embedder():
     return None
 
 
 @pytest_asyncio.fixture
-def push(clean_pg, qdrant_store, embedder):
-    return Push(clean_pg, qdrant_store, embedder)
+def push(clean_pg, embedder):
+    return Push(clean_pg, embedder)
 
 
 @pytest_asyncio.fixture
-def search(clean_pg, qdrant_store, embedder):
-    return HybridSearch(clean_pg, qdrant_store, embedder)
+def search(clean_pg, embedder):
+    return HybridSearch(clean_pg, embedder)
 
 
 @pytest_asyncio.fixture
@@ -81,7 +85,7 @@ async def api_client(clean_pg):
     from src.api.routes import init_routes
     from src.main import app
 
-    init_routes(clean_pg, qdrant_store=None, embedder_client=None, settings=None)
+    init_routes(clean_pg, embedder_client=None, settings=None)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client

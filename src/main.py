@@ -12,30 +12,26 @@ from fastapi import FastAPI
 from src.api.routes import init_routes, router
 from src.config import Settings
 from src.db.pg_store import PgStore
-from src.db.qdrant_store import QdrantStore
 from src.embed.ollama import OllamaEmbedder
 
 log = logging.getLogger("synapse")
 
 _pg: PgStore | None = None
-_qdrant: QdrantStore | None = None
 _scheduler = None
 
-app = FastAPI(title="synapse", version="3.0.0",
+app = FastAPI(title="synapse", version="4.0.0",
               description="Agent-first knowledge service for the Oracle ecosystem")
 app.include_router(router)
 
 
 async def _do_shutdown() -> None:
     """Graceful shutdown triggered by SIGTERM/SIGINT."""
-    global _scheduler, _pg, _qdrant
+    global _scheduler, _pg
     log.info("Shutting down gracefully...")
     if _scheduler:
         await _scheduler.stop()
     if _pg:
         await _pg.close()
-    if _qdrant:
-        await _qdrant.close()
     from src.daemon import remove_pid
     remove_pid()
     log.info("Shutdown complete")
@@ -43,15 +39,13 @@ async def _do_shutdown() -> None:
 
 @app.on_event("startup")
 async def startup():
-    global _pg, _qdrant, _scheduler
+    global _pg, _scheduler
 
     settings = Settings()
 
-    # Write PID file so synapse status/stop can find us
     from src.daemon import write_pid, setup_signals
     write_pid(settings.daemon_pid_file)
 
-    # Set up signal handlers for graceful shutdown
     def _on_shutdown():
         asyncio.create_task(_do_shutdown())
 
@@ -64,17 +58,12 @@ async def startup():
     await _pg.connect()
     await _pg.init_schema()
 
-    # Restore registered projects from backup if DB is empty
+    # Seed default tag rules (idempotent)
+    from src.assistant.tag_rules import seed_default_rules
+    await seed_default_rules(_pg)
+
     from src.registry import restore_registry_backup
     await restore_registry_backup(_pg)
-
-    _qdrant = None
-    try:
-        _qdrant = QdrantStore(settings)
-        await _qdrant.connect()
-    except Exception:
-        log.warning("Qdrant not available, running in FTS-only mode")
-        _qdrant = None
 
     embedder = None
     try:
@@ -83,15 +72,13 @@ async def startup():
         log.warning("Ollama not available, running without embeddings")
         embedder = None
 
-    init_routes(_pg, _qdrant, embedder, settings=settings)
+    init_routes(_pg, embedder, settings=settings)
 
-    # Start background scheduler if scan interval, reconcile, or topic monitor is enabled
     if settings.scan_interval > 0 or settings.reconcile_hour >= 0 or settings.topic_monitor_interval > 0:
         from src.scheduler import TaskScheduler
         _scheduler = TaskScheduler(
             pg=_pg,
             settings=settings,
-            qdrant=_qdrant,
             embedder=embedder,
             scan_interval=settings.scan_interval,
             reconcile_hour=settings.reconcile_hour,
@@ -110,12 +97,13 @@ async def shutdown():
 async def _cmd_push(args):
     from src.cli import get_components, cleanup, output
 
+    tags = _parse_list(args.tags) or ([args.scope] if args.scope and args.scope != "shared" else None)
     components = await get_components()
     try:
         if args.file:
             result = await components.push.push_file(
                 file_path=args.file,
-                scope=args.scope,
+                tags=tags,
                 doc_type=args.doc_type,
             )
         else:
@@ -129,12 +117,11 @@ async def _cmd_push(args):
             result = await components.push.push_text(
                 title=args.title,
                 content=args.content,
-                scope=args.scope or "shared",
                 doc_type=args.doc_type or "learning",
                 source_file=args.source_file,
-                source_project=args.source_project,
+                source_project=args.source_project or args.scope,
                 concepts=_parse_list(args.concepts),
-                tags=_parse_list(args.tags),
+                tags=tags,
                 oracle_name=args.oracle_name,
                 brain_path=args.brain_path,
                 brain_tier=args.brain_tier,
@@ -147,15 +134,16 @@ async def _cmd_push(args):
 async def _cmd_search(args):
     from src.cli import get_components, cleanup, output
 
+    tags = _parse_list(args.tags) or ([args.scope] if args.scope else None)
     components = await get_components()
     try:
         results = await components.search.search(
             query=args.query,
-            scope=args.scope,
             doc_type=args.doc_type,
             oracle=args.oracle,
             source_project=args.source_project,
             concepts=_parse_list(args.concepts),
+            tags=tags,
             limit=args.limit,
             mode=args.mode,
         )
@@ -184,12 +172,13 @@ async def _cmd_get(args):
 async def _cmd_list(args):
     from src.cli import get_components, cleanup, output
 
+    tags = _parse_list(args.tags) or ([args.scope] if args.scope else None)
     components = await get_components()
     try:
         docs = await components.pg.list_docs(
-            scope=args.scope,
             doc_type=args.doc_type,
             oracle=args.oracle,
+            tags=tags,
             limit=args.limit,
             offset=args.offset,
             order=args.order,
@@ -206,6 +195,20 @@ async def _cmd_scope(args):
     try:
         scopes = await components.pg.list_scopes()
         output(scopes)
+    finally:
+        await cleanup(components)
+
+
+async def _cmd_tags(args):
+    from src.cli import get_components, cleanup, output
+
+    components = await get_components()
+    try:
+        result = await components.pg.list_tags(
+            search=args.search,
+            limit=args.limit,
+        )
+        output(result)
     finally:
         await cleanup(components)
 
@@ -232,8 +235,7 @@ async def _cmd_supersede(args):
             reason=args.reason,
             new_title=args.new_title,
         )
-        if components.qdrant:
-            await components.qdrant.mark_superseded(args.old_id)
+        await components.pg.clear_embedding(args.old_id)
         output(result)
     finally:
         await cleanup(components)
@@ -290,9 +292,10 @@ async def _cmd_init(args):
     from src.ingest.init_scan import init_scan
     from src.cli import output
 
+    tags = _parse_list(args.tags) or ([args.scope] if args.scope else None)
     result = await init_scan(
         path=args.path,
-        scope=args.scope,
+        tags=tags,
         dry_run=args.dry_run,
     )
     output(result)
@@ -315,10 +318,10 @@ async def _cmd_reconcile(args):
         try:
             result = await reconcile(
                 pg=components.pg,
-                qdrant=components.qdrant,
                 embedder=components.embedder,
                 settings=components.settings,
                 scope=args.scope,
+                cross_scope=args.cross_scope,
                 dry_run=args.dry_run,
             )
             defrag = result.get("defrag", {})
@@ -421,11 +424,9 @@ async def _cmd_status(args):
     result = get_status(args.pid_file)
     settings = Settings()
 
-    # Check local-only violations
     violations = check_and_warn(settings, allow_docker=(settings.api_host == "0.0.0.0"))
     result["local_only_violations"] = violations
 
-    # Try to get DB stats
     try:
         components = await get_components()
         stats = await components.pg.stats()
@@ -542,34 +543,30 @@ def json_dump(data) -> str:
 # ─── CLI argument parser ───────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="synapse", description="Synapse — Hybrid Knowledge Framework")
+    parser = argparse.ArgumentParser(prog="synapse", description="Synapse — Knowledge Framework v4")
     sub = parser.add_subparsers(dest="command")
 
-    # serve
     sub.add_parser("serve", help="Start HTTP API server")
-
-    # mcp
     sub.add_parser("mcp", help="Start MCP stdio server")
 
-    # push
     p = sub.add_parser("push", help="Add knowledge to vault")
     p.add_argument("--title", help="Document title (required unless --file)")
     p.add_argument("--content", help="Document content (required unless --file)")
     p.add_argument("--file", "-f", help="File path to ingest")
-    p.add_argument("--scope", default="shared", help="Scope/namespace (default: shared)")
+    p.add_argument("--scope", help="Scope/namespace (deprecated — use --tags)")
+    p.add_argument("--tags", help="Comma-separated tags for classification")
     p.add_argument("--doc-type", default="learning", help="Document type")
     p.add_argument("--source-file", help="Original source file path")
     p.add_argument("--source-project", help="Project that sent this knowledge")
     p.add_argument("--concepts", help="Comma-separated concepts")
-    p.add_argument("--tags", help="Comma-separated tags")
     p.add_argument("--oracle-name", help="Oracle name")
     p.add_argument("--brain-path", help="Brain path (κ/ψ relative)")
     p.add_argument("--brain-tier", help="Brain tier (intrinsic/extrinsic)")
 
-    # search
     p = sub.add_parser("search", help="Search knowledge vault")
     p.add_argument("query", help="Search query")
-    p.add_argument("--scope", help="Filter by scope")
+    p.add_argument("--scope", help="Filter by scope (deprecated — use --tags)")
+    p.add_argument("--tags", help="Comma-separated tags filter")
     p.add_argument("--doc-type", help="Filter by doc_type")
     p.add_argument("--oracle", help="Filter by oracle name")
     p.add_argument("--source-project", help="Filter by source project")
@@ -577,34 +574,32 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     p.add_argument("--mode", default="hybrid", choices=["hybrid", "dense", "fts"], help="Search mode")
 
-    # get
     p = sub.add_parser("get", help="Retrieve full document by ID")
     p.add_argument("id", help="Document UUID")
     p.add_argument("--no-chain", action="store_true", help="Don't include supersession chain")
 
-    # list
     p = sub.add_parser("list", help="List documents with filters")
-    p.add_argument("--scope", help="Filter by scope")
+    p.add_argument("--scope", help="Filter by scope (deprecated — use --tags)")
+    p.add_argument("--tags", help="Comma-separated tags filter")
     p.add_argument("--doc-type", help="Filter by doc_type")
     p.add_argument("--oracle", help="Filter by oracle name")
     p.add_argument("--limit", type=int, default=20, help="Max results (default: 20)")
     p.add_argument("--offset", type=int, default=0, help="Offset for pagination")
     p.add_argument("--order", default="newest", choices=["newest", "oldest"], help="Sort order")
 
-    # scope
-    sub.add_parser("scope", help="List all knowledge scopes")
+    sub.add_parser("scope", help="List all knowledge scopes (deprecated — use tags)")
+    p = sub.add_parser("tags", help="List or search tags across the knowledge vault")
+    p.add_argument("--search", help="Search tags by name")
+    p.add_argument("--limit", type=int, default=50, help="Max results (default: 50)")
 
-    # stats
     sub.add_parser("stats", help="Show knowledge vault statistics")
 
-    # supersede
     p = sub.add_parser("supersede", help="Supersede a document with updated content")
     p.add_argument("old_id", help="UUID of document to supersede")
     p.add_argument("--new-content", required=True, help="Updated content")
     p.add_argument("--new-title", help="Optional new title")
     p.add_argument("--reason", default="updated", help="Reason for supersession")
 
-    # trace
     p = sub.add_parser("trace", help="Create a trace link between documents")
     p.add_argument("--source", required=True, help="Source document UUID")
     p.add_argument("--target", required=True, help="Target document UUID")
@@ -613,69 +608,58 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Relation type")
     p.add_argument("--confidence", type=float, default=1.0, help="Confidence score (0-1)")
 
-    # trace-chain
     p = sub.add_parser("trace-chain", help="Follow trace chain from a document")
     p.add_argument("doc_id", help="Document UUID")
     p.add_argument("--direction", default="both", choices=["both", "upstream", "downstream"],
                    help="Trace direction")
     p.add_argument("--max-depth", type=int, default=5, help="Max trace depth")
 
-    # concepts
     p = sub.add_parser("concepts", help="List or search concepts")
     p.add_argument("--search", help="Search concepts by name")
     p.add_argument("--limit", type=int, default=50, help="Max results (default: 50)")
 
-    # init
     p = sub.add_parser("init", help="Scan files and build initial knowledge vault")
     p.add_argument("--path", default=".", help="Directory to scan (default: current)")
-    p.add_argument("--scope", help="Scope for ingested documents (default: auto-detect)")
+    p.add_argument("--scope", help="Scope for ingested documents (deprecated — use --tags)")
+    p.add_argument("--tags", help="Comma-separated tags for ingested documents")
     p.add_argument("--dry-run", action="store_true", help="Show what would be ingested without ingesting")
 
-    # reconcile
     p = sub.add_parser("reconcile", help="Defrag duplicates + detect/fix conflicts")
     p.add_argument("--scope", help="Limit to a specific scope")
+    p.add_argument("--cross-scope", action="store_true", help="Search across all scopes for duplicates/conflicts")
     p.add_argument("--dry-run", action="store_true", help="Show what would be changed without changing")
     p.add_argument("--history", action="store_true", help="Show recent reconcile runs instead of running")
     p.add_argument("--limit", type=int, default=20, help="Max history entries (default: 20)")
 
-    # register
     p = sub.add_parser("register", help="Register a project with the vault")
     p.add_argument("--path", default=".", help="Project directory (default: current)")
     p.add_argument("--scope", help="Scope name (default: auto-detect from path)")
 
-    # unregister
     p = sub.add_parser("unregister", help="Remove a project registration")
     p.add_argument("scope", help="Scope name to unregister")
 
-    # projects
     sub.add_parser("projects", help="List registered projects")
 
-    # search-cross
     p = sub.add_parser("search-cross", help="Search across multiple scopes")
     p.add_argument("query", help="Search query")
     p.add_argument("--scopes", required=True, help="Comma-separated scope names")
     p.add_argument("--limit", type=int, default=10, help="Max results (default: 10)")
     p.add_argument("--mode", default="hybrid", choices=["hybrid", "dense", "fts"], help="Search mode")
 
-    # stop
     p = sub.add_parser("stop", help="Stop a running synapse daemon")
     p.add_argument("--pid-file", help="Path to PID file")
 
-    # status
     p = sub.add_parser("status", help="Show daemon and system status")
     p.add_argument("--pid-file", help="Path to PID file")
 
-    # scan
     sub.add_parser("scan", help="Scan all registered projects for new files")
 
-    # install-hooks
     p = sub.add_parser("install-hooks", help="Register synapse hooks in ~/.claude/settings.json")
     p.add_argument("--dry-run", action="store_true", help="Show what would be installed without making changes")
     p.add_argument("--python-path", help="Path to Python interpreter (default: current)")
     p.add_argument("--script-path", help="Path to context injection script")
     p.add_argument("--settings-path", help="Path to settings.json (default: ~/.claude/settings.json)")
 
-    # topic-add
     p = sub.add_parser("topic-add", help="Add a search topic for web/social monitoring")
     p.add_argument("--scope", required=True, help="Scope to associate topic with")
     p.add_argument("--topic", required=True, help="Search query/topic")
@@ -684,30 +668,51 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--frequency", default="daily", choices=["hourly", "daily", "weekly"],
                    help="Monitoring frequency (default: daily)")
 
-    # topic-list
     p = sub.add_parser("topic-list", help="List configured search topics")
     p.add_argument("--scope", help="Filter by scope")
     p.add_argument("--enabled-only", action="store_true", help="Show only enabled topics")
 
-    # topic-remove
     p = sub.add_parser("topic-remove", help="Remove a search topic")
     p.add_argument("topic_id", help="Topic UUID")
 
-    # topic-run
     p = sub.add_parser("topic-run", help="Manually run topic monitor")
     p.add_argument("--limit", type=int, default=5, help="Results per topic (default: 5)")
+
+    p = sub.add_parser("fix-doctype", help="Fix incorrectly classified doc_types")
+    p.add_argument("--from-type", default="task", help="Source doc_type to change (default: task)")
+    p.add_argument("--to-type", default="note", help="Target doc_type (default: note)")
+    p.add_argument("--source-type", default=None, help="Only fix docs with this source_type")
+    p.add_argument("--apply", action="store_true", default=False, help="Apply changes (default: dry-run)")
 
     return parser
 
 
+
+async def _cmd_fix_doctype(args):
+    from src.cli import get_components, cleanup, output
+
+    components = await get_components()
+    try:
+        result = await components.pg.fix_doc_types(
+            from_type=args.from_type,
+            to_type=args.to_type,
+            source_type=args.source_type if args.source_type else None,
+            dry_run=not args.apply,
+        )
+        output(result)
+    finally:
+        await cleanup(components)
+
+
 COMMAND_DISPATCH = {
-    "serve": None,  # handled separately
-    "mcp": None,    # handled separately
+    "serve": None,
+    "mcp": None,
     "push": _cmd_push,
     "search": _cmd_search,
     "get": _cmd_get,
     "list": _cmd_list,
     "scope": _cmd_scope,
+    "tags": _cmd_tags,
     "stats": _cmd_stats,
     "supersede": _cmd_supersede,
     "trace": _cmd_trace,
@@ -726,6 +731,7 @@ COMMAND_DISPATCH = {
     "topic-add": _cmd_topic_add,
     "topic-list": _cmd_topic_list,
     "topic-remove": _cmd_topic_remove,
+    "fix-doctype": _cmd_fix_doctype,
     "topic-run": _cmd_topic_run,
 }
 
@@ -739,12 +745,18 @@ def cli_main():
         return
 
     if args.command == "serve":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            datefmt="%H:%M:%S",
+        )
         settings = Settings()
         uvicorn.run(app, host=settings.api_host, port=settings.api_port)
     elif args.command == "mcp":
         from src.mcp.server import run_server
         asyncio.run(run_server())
     elif args.command in COMMAND_DISPATCH and COMMAND_DISPATCH[args.command]:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
         handler = COMMAND_DISPATCH[args.command]
         asyncio.run(handler(args))
     else:

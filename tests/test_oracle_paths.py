@@ -23,10 +23,10 @@ class TestExtractMetadata:
             "/repos/emily-oracle/ψ/memory/learnings/pattern-001.md",
             "/repos/emily-oracle",
         )
-        assert result["doc_type"] == "learning"
-        assert result["brain_tier"] == "extrinsic"
+        assert result["doc_type"] == "knowledge"
+        assert result["metadata"]["brain_tier"] == "extrinsic"
         assert result["oracle_name"] == "emily"
-        assert result["scope"] == "emily"
+        assert result["tags"] == ["oracle:emily"]
 
     def test_psi_retrospectives(self):
         result = extract_metadata(
@@ -41,15 +41,15 @@ class TestExtractMetadata:
             "/repos/emily-oracle",
         )
         assert result["doc_type"] == "instinct"
-        assert result["brain_tier"] == "intrinsic"
+        assert result["metadata"]["brain_tier"] == "intrinsic"
 
     def test_kappa_wisdom(self):
         result = extract_metadata(
             "/repos/emily-oracle/κ/extrinsic/wisdom/knowledge/synthesis.md",
             "/repos/emily-oracle",
         )
-        assert result["doc_type"] == "wisdom"
-        assert result["brain_tier"] == "extrinsic"
+        assert result["doc_type"] == "knowledge"
+        assert result["metadata"]["brain_tier"] == "extrinsic"
 
     def test_psi_outbox(self):
         result = extract_metadata(

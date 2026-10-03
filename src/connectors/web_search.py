@@ -4,12 +4,10 @@ Supports multiple providers: serper, tavily, duckduckgo.
 """
 
 import logging
-from typing import Optional
 
 import httpx
 
 from src.config import Settings
-from src.local_only import validate_local_url
 
 log = logging.getLogger("synapse.connectors.web_search")
 

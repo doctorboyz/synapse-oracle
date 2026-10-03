@@ -4,7 +4,6 @@ import pytest
 
 from src.api.line_handler import (
     _is_command,
-    _is_confirmation_reply,
     _is_question,
     event_to_scope,
     verify_line_signature,
@@ -102,8 +101,9 @@ class TestHandleCommand:
         from src.api.line_handler import _handle_command
         from src.config import Settings
 
-        reply = await _handle_command("scopes", "", clean_pg, Settings(), scope="test")
-        assert "Scopes" in reply or "scope" in reply.lower()
+        await clean_pg.add(title="Doc", content="test content", tags=["test"])
+        reply = await _handle_command("tags", "", clean_pg, Settings(), scope="test")
+        assert "test" in reply
 
     @pytest.mark.asyncio
     async def test_search_command_with_results(self, clean_pg, monkeypatch):
@@ -111,7 +111,7 @@ class TestHandleCommand:
         from src.config import Settings
 
         # Add a doc first
-        await clean_pg.add(title="Docker Guide", content="docker compose tips", scope="test")
+        await clean_pg.add(title="Docker Guide", content="docker compose tips", tags=["test"])
         reply = await _handle_command("search", "docker", clean_pg, Settings(), scope="test")
         assert "Docker Guide" in reply
 
@@ -128,8 +128,8 @@ class TestHandleCommand:
         from src.api.line_handler import _handle_command
         from src.config import Settings
 
-        await clean_pg.add(title="Recent Doc", content="content", scope="test")
-        reply = await _handle_command("recent", "test", clean_pg, Settings(), scope="test")
+        await clean_pg.add(title="Recent Doc", content="content", tags=["test"])
+        reply = await _handle_command("recent", "", clean_pg, Settings(), scope=None)
         assert "Recent Doc" in reply
 
     @pytest.mark.asyncio
@@ -145,7 +145,7 @@ class TestHandleCommand:
         from src.api.line_handler import _handle_command
         from src.config import Settings
 
-        await clean_pg.add(title="Docker Tips", content="Use docker compose", scope="test")
+        await clean_pg.add(title="Docker Tips", content="Use docker compose", tags=["test"])
 
         async def mock_chat(*args, **kwargs):
             return "Use docker compose for local dev"
@@ -171,7 +171,7 @@ class TestAnswerQuestion:
         from src.api.line_handler import _answer_question
         from src.config import Settings
 
-        await clean_pg.add(title="Docker Tips", content="Use docker compose for local dev", scope="test")
+        await clean_pg.add(title="Docker Tips", content="Use docker compose for local dev", tags=["test"])
         settings = Settings()
 
         # Mock OpenRouter chat to avoid real API calls
@@ -199,7 +199,7 @@ class TestProcessLineEventsFullFlow:
         from src.api.line_handler import process_line_events
         from src.config import Settings
 
-        await clean_pg.add(title="Guide", content="docker tips", scope="shared")
+        await clean_pg.add(title="Guide", content="docker tips")
         monkeypatch.setattr("src.api.line_handler._send_reply", lambda *a, **k: None)
 
         events = [
@@ -216,24 +216,27 @@ class TestProcessLineEventsFullFlow:
         assert stats["answered"] == 0
 
     @pytest.mark.asyncio
-    async def test_question_text_goes_to_capture(self, clean_pg, monkeypatch):
+    async def test_question_text_auto_push(self, clean_pg, monkeypatch):
         from src.api.line_handler import process_line_events
         from src.config import Settings
 
         monkeypatch.setattr("src.api.line_handler._send_reply", lambda *a, **k: None)
+        monkeypatch.setattr("src.embed.ollama.OllamaEmbedder", type("FakeEmbedder", (), {
+            "__init__": lambda self, s: None,
+        }))
 
         events = [
             {
                 "type": "message",
                 "source": {"type": "user", "userId": "U1"},
-                "message": {"type": "text", "text": "docker คืออะไร?", "id": "1"},
+                "message": {"type": "text", "text": "docker คืออะไร? I need to understand how containerization works for deployment and how Docker containers differ from traditional virtual machines in a production environment (this sentence adds padding)", "id": "1"},
                 "replyToken": "rt1",
                 "timestamp": 123,
             }
         ]
         stats = await process_line_events(events, clean_pg, access_token="", settings=Settings())
-        # Without auto-detect, questions go to knowledge capture
-        assert stats["answered"] == 0
+        # Auto-ingest: questions are stored as knowledge
+        assert stats["pushed"] == 1
         assert stats["created"] == 1
 
     @pytest.mark.asyncio
@@ -241,7 +244,7 @@ class TestProcessLineEventsFullFlow:
         from src.api.line_handler import process_line_events
         from src.config import Settings
 
-        await clean_pg.add(title="Docker Guide", content="docker compose v2", scope="shared")
+        await clean_pg.add(title="Docker Guide", content="docker compose v2")
         monkeypatch.setattr("src.api.line_handler._send_reply", lambda *a, **k: None)
 
         async def mock_chat(*args, **kwargs):
@@ -269,56 +272,22 @@ class TestProcessLineEventsFullFlow:
         from src.config import Settings
 
         monkeypatch.setattr("src.api.line_handler._send_reply", lambda *a, **k: None)
+        monkeypatch.setattr("src.embed.ollama.OllamaEmbedder", type("FakeEmbedder", (), {
+            "__init__": lambda self, s: None,
+        }))
 
         events = [
             {
                 "type": "message",
                 "source": {"type": "user", "userId": "U1"},
-                "message": {"type": "text", "text": "This is a message about testing the bot", "id": "1"},
+                "message": {"type": "text", "text": "This is a detailed message about testing the bot functionality and features with enough extra text to make sure it exceeds two hundred characters for the guided question bypass check properly now yes indeed", "id": "1"},
                 "replyToken": "rt1",
                 "timestamp": 123,
             }
         ]
         stats = await process_line_events(events, clean_pg, access_token="", settings=Settings())
-        assert stats["created"] == 1
-
-    @pytest.mark.asyncio
-    async def test_confirmation_yes(self, clean_pg, monkeypatch):
-        from src.api.line_handler import process_line_events
-        from src.config import Settings
-
-        monkeypatch.setattr("src.api.line_handler._send_reply", lambda *a, **k: None)
-
-        # Create pending review first
-        review = {
-            "title": "Test",
-            "content": "content",
-            "summary": "",
-            "scope": "line-user-U1",
-            "doc_type": "note",
-            "source_type": "line-user",
-            "source_project": "line-integration",
-            "oracle_name": "line-bot",
-            "tags": ["line"],
-            "concepts": ["line"],
-            "metadata": {},
-            "reply_token": "rt-old",
-            "user_id": "U1",
-            "chat_id": "U1",
-        }
-        result = await clean_pg.create_pending_review(review)
-
-        events = [
-            {
-                "type": "message",
-                "source": {"type": "user", "userId": "U1"},
-                "message": {"type": "text", "text": "ใช่", "id": "2"},
-                "replyToken": "rt-new",
-                "timestamp": 456,
-            }
-        ]
-        stats = await process_line_events(events, clean_pg, access_token="", settings=Settings())
         assert stats["pushed"] == 1
+        assert stats["created"] == 1
 
     @pytest.mark.asyncio
     async def test_sticker_skip(self, clean_pg, monkeypatch):

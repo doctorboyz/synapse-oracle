@@ -1,1 +1,1 @@
-"""Database package — PostgreSQL + Qdrant storage."""
+"""Database package — PostgreSQL (pgvector) storage."""

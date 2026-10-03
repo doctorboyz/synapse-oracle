@@ -36,26 +36,26 @@ class TestReciprocalRankFusion:
 @pytest.mark.asyncio
 class TestHybridSearch:
     async def test_fts_mode(self, clean_pg):
-        await clean_pg.add(title="Python Tips", content="Use list comprehensions", scope="shared")
+        await clean_pg.add(title="Python Tips", content="Use list comprehensions")
         search = HybridSearch(clean_pg)
         results = await search.search("python", mode="fts")
         assert len(results) >= 1
 
     async def test_fts_mode_with_scope(self, clean_pg):
-        await clean_pg.add(title="Shared Doc", content="public info", scope="shared")
-        await clean_pg.add(title="Emily Doc", content="private info", scope="emily", oracle_name="emily")
+        await clean_pg.add(title="Shared Doc", content="public info")
+        await clean_pg.add(title="Emily Doc", content="private info", tags=["emily"], oracle_name="emily")
         search = HybridSearch(clean_pg)
-        results = await search.search("info", scope="emily", mode="fts")
+        results = await search.search("info", oracle="emily", mode="fts")
         assert len(results) >= 1
-        assert all(r["scope"] == "emily" for r in results)
+        assert all(r["oracle_name"] == "emily" for r in results)
 
-    async def test_hybrid_falls_back_to_fts_without_qdrant(self, clean_pg):
-        await clean_pg.add(title="Docker Setup", content="Use compose v2", scope="shared")
-        search = HybridSearch(clean_pg, qdrant=None, embedder=None)
+    async def test_hybrid_falls_back_to_fts_without_embedder(self, clean_pg):
+        await clean_pg.add(title="Docker Setup", content="Use compose v2")
+        search = HybridSearch(clean_pg, embedder=None)
         results = await search.search("docker", mode="hybrid")
         assert len(results) >= 1
 
-    async def test_dense_mode_without_qdrant_raises(self, clean_pg):
+    async def test_dense_mode_without_embedder_raises(self, clean_pg):
         from src.retrieve.hybrid_search import SearchError
         search = HybridSearch(clean_pg)
         with pytest.raises(SearchError, match="Dense search requires"):

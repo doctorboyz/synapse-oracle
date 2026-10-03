@@ -47,11 +47,11 @@ def replace_links(content: str, resolver: dict[str, str]) -> str:
     return OBSIDIAN_LINK_RE.sub(_repl, content)
 
 
-async def resolve_links(pg, links: list[dict], scope: str | None = None,
+async def resolve_links(pg, links: list[dict], tags: list[str] | None = None,
                       exclude_id: str | None = None) -> dict[str, str]:
     """Resolve link targets to document IDs.
 
-    Searches across all scopes first, then falls back to same scope.
+    Searches across all documents first, then falls back to same tags.
     Excludes the current document to avoid self-references.
     Returns {target_title: doc_id} for resolved links.
     """
@@ -114,9 +114,9 @@ async def resolve_links(pg, links: list[dict], scope: str | None = None,
         except Exception:
             pass
 
-        # 4. Exact title match in same scope
+        # 4. Exact title match filtered by same tags
         try:
-            docs = await pg.list_docs(scope=scope, limit=20)
+            docs = await pg.list_docs(tags=tags, limit=20)
             for doc in docs:
                 if str(doc.get("id")) == exclude_id:
                     continue
@@ -137,7 +137,7 @@ async def resolve_links(pg, links: list[dict], scope: str | None = None,
 
 
 async def create_traces_from_links(pg, doc_id: str, content: str,
-                                    scope: str | None = None) -> dict:
+                                    tags: list[str] | None = None) -> dict:
     """Parse Obsidian links in content and create trace links to referenced docs.
 
     Returns dict with: links_found, traces_created, unresolved
@@ -146,7 +146,7 @@ async def create_traces_from_links(pg, doc_id: str, content: str,
     if not links:
         return {"links_found": 0, "traces_created": 0, "unresolved": []}
 
-    resolved = await resolve_links(pg, links, scope=scope, exclude_id=doc_id)
+    resolved = await resolve_links(pg, links, tags=tags, exclude_id=doc_id)
     traces_created = 0
     unresolved = []
 

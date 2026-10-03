@@ -28,17 +28,23 @@ Respond in this exact JSON format:
 Be conservative: only mark as conflict if the documents genuinely contradict each other.
 Overlapping information is not a conflict unless one document contradicts the other."""
 
+# Judge chain: gemma4 first (fastest + cleanest fenced JSON, tested 3/10/26),
+# glm-flash second (deeper Thai analysis — catches pairs gemma4 misses),
+# qwen3:8b last (local offline fallback). Kept explicit (not from env) so a
+# missing model is a config bug we notice in llm_errors, not a silent zero.
+JUDGE_MODEL_CHAIN = ["gemma4:cloud", "glm-5.3-flash:cloud", "qwen3:8b"]
+
 
 async def analyze_conflict(
     doc_a: dict,
     doc_b: dict,
     settings,
-    model: str = "qwen3:8b",
 ) -> dict | None:
-    """Use LLM to analyze whether two documents conflict.
+    """Use a local Ollama LLM to analyze whether two documents conflict.
 
-    Returns dict with: is_conflict, conflict_type, reason, supersede_id, merged_content
-    Returns None if LLM is unavailable.
+    Tries each model in JUDGE_MODEL_CHAIN until one answers. Returns dict with:
+    is_conflict, conflict_type, reason, supersede_id, merged_content.
+    Returns None if every model failed (caller must surface this as llm_errors).
     """
     import json
 
@@ -49,33 +55,48 @@ async def analyze_conflict(
         content_b=doc_b.get("content", "")[:2000],
     )
 
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(
-                f"{settings.ollama_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                },
-            )
+    last_error = None
+    for judge_model in JUDGE_MODEL_CHAIN:
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    f"{settings.ollama_url}/api/generate",
+                    json={
+                        "model": judge_model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "format": "json",
+                        "think": False,  # skip CoT: 43s -> ~8s per pair
+                    },
+                )
 
             if response.status_code != 200:
-                log.warning("LLM request failed: %s", response.status_code)
-                return None
+                last_error = f"HTTP {response.status_code} from {judge_model}"
+                log.warning("LLM request failed (%s): %s", judge_model, response.status_code)
+                continue
 
             data = response.json()
             text = data.get("response", "").strip()
 
             # Try to parse JSON from the response
-            # LLM may wrap JSON in markdown code blocks
+            # LLM may wrap JSON in markdown code blocks or lead with prose
             if "```json" in text:
                 text = text.split("```json")[1].split("```")[0].strip()
             elif "```" in text:
                 text = text.split("```")[1].split("```")[0].strip()
 
-            result = json.loads(text)
+            result = None
+            try:
+                result = json.loads(text)
+            except json.JSONDecodeError:
+                # Some cloud models answer with analysis prose then a bare
+                # JSON object at the end — extract the outermost braces.
+                if "{" in text and "}" in text:
+                    candidate = text[text.index("{"):text.rindex("}") + 1]
+                    result = json.loads(candidate)
+
+            if result is None:
+                raise json.JSONDecodeError("no JSON found in response", text, 0)
 
             # Normalize boolean
             if isinstance(result.get("is_conflict"), str):
@@ -83,19 +104,22 @@ async def analyze_conflict(
 
             return result
 
-    except json.JSONDecodeError as e:
-        log.warning("Failed to parse LLM response as JSON: %s", e)
-        return None
-    except Exception as e:
-        log.warning("LLM conflict analysis failed: %s", e)
-        return None
+        except json.JSONDecodeError as e:
+            last_error = f"bad JSON from {judge_model}: {e}"
+            log.warning("Failed to parse LLM response as JSON (%s): %s", judge_model, e)
+        except Exception as e:
+            last_error = f"request to {judge_model} failed: {e}"
+            log.warning("LLM conflict analysis failed (%s): %s", judge_model, e)
+
+    log.error("All judge models failed: %s", last_error)
+    return None
 
 
 async def summarize_content(
     content: str,
     title: str,
     settings,
-    model: str = "qwen3:8b",
+    judge_model: str = "qwen3:8b",
 ) -> str | None:
     """Use LLM to summarize content. Returns summary or None."""
     prompt = (
@@ -110,7 +134,7 @@ async def summarize_content(
             response = await client.post(
                 f"{settings.ollama_url}/api/generate",
                 json={
-                    "model": model,
+                    "model": judge_model,
                     "prompt": prompt,
                     "stream": False,
                 },

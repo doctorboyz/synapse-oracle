@@ -4,7 +4,6 @@ Supports: twitter (X), reddit, hackernews.
 """
 
 import logging
-from typing import Optional
 
 import httpx
 
