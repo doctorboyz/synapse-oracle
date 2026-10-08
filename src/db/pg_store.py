@@ -295,7 +295,7 @@ class PgStore:
             idx += len(tags)
 
         base_where = " AND ".join(base_conditions) if base_conditions else "1=1"
-        cols = "DISTINCT knowledge_documents.id, title, scope, doc_type, oracle_name, source_project, LEFT(content, 500) as content, created_at"
+        cols = "DISTINCT knowledge_documents.id, title, scope, doc_type, oracle_name, source_project, LEFT(content, 500) as content, knowledge_documents.created_at"
 
         async with self.pool.acquire() as conn:
             # Phase 1: tsvector FTS
@@ -317,7 +317,7 @@ class PgStore:
                                    0.3 AS rank
                             FROM knowledge_documents{tag_join}
                             WHERE {ilike_where}
-                            ORDER BY created_at DESC
+                            ORDER BY knowledge_documents.created_at DESC
                             LIMIT ${ilike_idx}"""
             ilike_rows = await conn.fetch(ilike_sql, *ilike_params)
 
@@ -678,11 +678,11 @@ class PgStore:
         where = " AND ".join(conditions) if conditions else "1=1"
         direction = "DESC" if order == "newest" else "ASC"
 
-        sql = f"""SELECT DISTINCT knowledge_documents.id, title, scope, doc_type, oracle_name, source_project, created_at,
+        sql = f"""SELECT DISTINCT knowledge_documents.id, title, scope, doc_type, oracle_name, source_project, knowledge_documents.created_at,
                          LEFT(content, 500) as content, summary
                   FROM knowledge_documents{tag_join}
                   WHERE {where}
-                  ORDER BY created_at {direction}
+                  ORDER BY knowledge_documents.created_at {direction}
                   LIMIT ${idx} OFFSET ${idx+1}"""
 
         async with self.pool.acquire() as conn:

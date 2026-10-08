@@ -3,41 +3,6 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Migration: copy tags from JSONB column to junction tables, then drop JSONB column
-DO $$
-DECLARE
-    rec RECORD;
-    tag_name TEXT;
-BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_name = 'knowledge_documents' AND column_name = 'tags'
-    ) THEN
-        FOR rec IN
-            SELECT id, tags FROM knowledge_documents WHERE tags IS NOT NULL AND jsonb_array_length(tags) > 0
-        LOOP
-            FOR tag_name IN SELECT jsonb_array_elements_text(rec.tags)
-            LOOP
-                INSERT INTO tags (name) VALUES (tag_name) ON CONFLICT (name) DO NOTHING;
-                INSERT INTO document_tags (doc_id, tag_id)
-                SELECT rec.id, t.id FROM tags t WHERE t.name = tag_name
-                ON CONFLICT DO NOTHING;
-            END LOOP;
-        END LOOP;
-        ALTER TABLE knowledge_documents DROP COLUMN tags;
-    END IF;
-END $$;
-
--- Migration: add metadata JSONB and archived_at columns (v5 prep)
-ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
-ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
-
--- Migration: update doc_type default from 'learning' to 'note'
-ALTER TABLE knowledge_documents ALTER COLUMN doc_type SET DEFAULT 'note';
-
--- Migration: scope is being deprecated in favor of source_project + tags; drop NOT NULL
-ALTER TABLE knowledge_documents ALTER COLUMN scope DROP NOT NULL;
-ALTER TABLE knowledge_documents ALTER COLUMN scope SET DEFAULT NULL;
 
 CREATE TABLE IF NOT EXISTS knowledge_documents (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -58,7 +23,9 @@ CREATE TABLE IF NOT EXISTS knowledge_documents (
     updated_at      TIMESTAMPTZ,
     search_vector   tsvector,
     embedding       vector(768),                -- pgvector replaces Qdrant
-    summary         TEXT                        -- auto-summarization
+    summary         TEXT,                       -- auto-summarization
+    metadata        JSONB DEFAULT '{}',        -- v5 prep
+    archived_at     TIMESTAMPTZ                 -- v5 prep
 );
 
 -- Drop old dedup constraint — dedup is now async via defrag
@@ -364,3 +331,44 @@ CREATE TABLE IF NOT EXISTS obsidian_sync_log (
 );
 CREATE INDEX IF NOT EXISTS idx_obsidian_doc ON obsidian_sync_log(doc_id);
 CREATE INDEX IF NOT EXISTS idx_obsidian_synced ON obsidian_sync_log(synced_at DESC);
+-- ---------------------------------------------------------------------------
+-- Migrations (run LAST: referenced tables exist by this point, and greenfield
+-- databases created by the definitions above are already in the target state,
+-- making every statement below a no-op on fresh installs).
+-- ---------------------------------------------------------------------------
+
+-- Migration: copy tags from JSONB column to junction tables, then drop JSONB column
+DO $$
+DECLARE
+    rec RECORD;
+    tag_name TEXT;
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'knowledge_documents' AND column_name = 'tags'
+    ) THEN
+        FOR rec IN
+            SELECT id, tags FROM knowledge_documents WHERE tags IS NOT NULL AND jsonb_array_length(tags) > 0
+        LOOP
+            FOR tag_name IN SELECT jsonb_array_elements_text(rec.tags)
+            LOOP
+                INSERT INTO tags (name) VALUES (tag_name) ON CONFLICT (name) DO NOTHING;
+                INSERT INTO document_tags (doc_id, tag_id)
+                SELECT rec.id, t.id FROM tags t WHERE t.name = tag_name
+                ON CONFLICT DO NOTHING;
+            END LOOP;
+        END LOOP;
+        ALTER TABLE knowledge_documents DROP COLUMN tags;
+    END IF;
+END $$;
+
+-- Migration: add metadata JSONB and archived_at columns (v5 prep)
+ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';
+ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ;
+
+-- Migration: update doc_type default from 'learning' to 'note'
+ALTER TABLE knowledge_documents ALTER COLUMN doc_type SET DEFAULT 'note';
+
+-- Migration: scope is being deprecated in favor of source_project + tags; drop NOT NULL
+ALTER TABLE knowledge_documents ALTER COLUMN scope DROP NOT NULL;
+ALTER TABLE knowledge_documents ALTER COLUMN scope SET DEFAULT NULL;
