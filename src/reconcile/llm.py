@@ -30,9 +30,9 @@ Overlapping information is not a conflict unless one document contradicts the ot
 
 # Judge chain: gemma4 first (fastest + cleanest fenced JSON, tested 3/10/26),
 # glm-flash second (deeper Thai analysis — catches pairs gemma4 misses),
-# qwen3:8b last (local offline fallback). Kept explicit (not from env) so a
-# missing model is a config bug we notice in llm_errors, not a silent zero.
-JUDGE_MODEL_CHAIN = ["gemma4:cloud", "glm-5.3-flash:cloud", "qwen3:8b"]
+# glm-5.3:cloud last (full-capability fallback). Kept explicit (not from env)
+# so a missing model is a config bug we notice in llm_errors, not a silent zero.
+JUDGE_MODEL_CHAIN = ["gemma4:cloud", "glm-5.3-flash:cloud", "glm-5.3:cloud"]
 
 
 async def analyze_conflict(
@@ -119,7 +119,7 @@ async def summarize_content(
     content: str,
     title: str,
     settings,
-    judge_model: str = "qwen3:8b",
+    judge_model: str = "gemma4:cloud",
 ) -> str | None:
     """Use LLM to summarize content. Returns summary or None."""
     prompt = (

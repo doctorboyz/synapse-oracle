@@ -83,7 +83,7 @@ If `embed=True` and Qdrant + Embedder available:
 | Operation | File | What It Does |
 |-----------|------|--------------|
 | **Defrag** | `src/reconcile/defrag.py` | Groups by `(title, scope)`. Supersedes duplicates with reason `"defrag_duplicate"`. |
-| **Detox** | `src/reconcile/detox.py` | Pairs same-scope, same-type docs. LLM (`qwen3:8b`) analyzes conflicts via structured JSON output. Supersedes with merged content if conflict confirmed. |
+| **Detox** | `src/reconcile/detox.py` | Pairs same-scope, same-type docs. LLM judge chain (gemma4:cloud → glm-5.3-flash:cloud → glm-5.3:cloud) analyzes conflicts via structured JSON output. Supersedes with merged content if conflict confirmed. |
 | **Scheduled** | `src/scheduler.py` | Background daemon runs scan every `SYNAPSE_SCAN_INTERVAL` seconds and reconcile at `SYNAPSE_RECONCILE_HOUR` (default 02:00). |
 
 ---
