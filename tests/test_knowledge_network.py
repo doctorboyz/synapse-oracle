@@ -358,6 +358,90 @@ class TestMCPErrorContext:
         assert err is None
 
 
+# ── 1b. เชื่อมโยงได้: detox resolution must be findable + complete ─────
+
+
+class TestDetoxResolution:
+    @pytest.mark.asyncio
+    async def test_detox_merge_embedded_and_both_sides_retired(
+        self, clean_pg, monkeypatch
+    ):
+        """Causal test for the real-reconcile defects (2026-10-11):
+
+        detox resolution must (a) route the merge through the push pipeline
+        so the merged doc gets embedded — dense must find it, and (b) retire
+        BOTH conflict sides against the merged doc. Judge's supersede_id "a"
+        means doc A supersedes doc B — B is the outdated side; the merged doc
+        replaces both, so neither may stay live after resolution.
+        """
+        import sys
+
+        import src.reconcile.detox  # noqa: F401 — ensure module is loaded
+
+        detox_module = sys.modules["src.reconcile.detox"]
+        from src.reconcile.detox import detox as run_detox
+
+        push = Push(clean_pg, FakeEmbedder())
+        old = await push.push_text(
+            title="Old Deploy Note", content="quantum docker deploy outdated",
+            tags=["test"], skip_semantic_dedup=True,
+        )
+        current = await push.push_text(
+            title="Current Deploy Note", content="quantum docker deploy fixed",
+            tags=["test"], skip_semantic_dedup=True,
+        )
+
+        async def fake_judge(doc_a, doc_b, settings):
+            # doc_a/doc_b are the pair as presented to the judge; supersede_id
+            # "a" = doc A (the current one) supersedes doc B (the outdated one)
+            return {
+                "is_conflict": True,
+                "conflict_type": "outdated",
+                "reason": "B is outdated, A is current",
+                "supersede_id": "a",
+                "merged_content": "quantum docker deploy merged resolution flamingo",
+            }
+
+        monkeypatch.setattr(detox_module, "analyze_conflict", fake_judge)
+
+        class _Settings:
+            ollama_url = "http://localhost:11434"
+
+        result = await run_detox(
+            clean_pg, embedder=FakeEmbedder(), settings=_Settings(), dry_run=False,
+        )
+        assert result["conflicts_resolved"] == 1, result
+        resolution = result["resolutions"][0]
+        merged_id = resolution["new_id"]
+        assert merged_id not in (old["id"], current["id"])
+
+        async with clean_pg.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT id, embedding IS NOT NULL AS embedded, superseded_by
+                   FROM knowledge_documents WHERE id = ANY($1::uuid[])""",
+                [old["id"], current["id"], merged_id],
+            )
+        by_id = {str(r["id"]): r for r in rows}
+        assert by_id[merged_id]["embedded"], (
+            "merged doc must be embedded after detox resolve "
+            "(raw pg.supersede leaves it dense-unfindable)"
+        )
+        assert str(by_id[old["id"]]["superseded_by"]) == merged_id, (
+            "outdated side must be retired into the merged doc"
+        )
+        assert str(by_id[current["id"]]["superseded_by"]) == merged_id, (
+            "surviving side must also be retired into the merged doc — "
+            "merged content replaces both"
+        )
+
+        # Dense must find the merged doc by its distinctive new content
+        search = HybridSearch(clean_pg, FakeEmbedder())
+        hits = await search.search("flamingo", mode="dense")
+        assert merged_id in [r["id"] for r in hits], (
+            f"merged doc must be dense-findable, got {[r['id'] for r in hits]}"
+        )
+
+
 # ── 6. เชื่อมโยงได้: defrag must not N+1 ─────────────────────────────────
 
 

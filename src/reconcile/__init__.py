@@ -12,11 +12,14 @@ async def reconcile(
     tags: list[str] | None = None,
     cross_scope: bool = False,
     dry_run: bool = False,
+    push=None,
 ) -> dict:
     """Run full reconcile: defrag + detox.
 
     When cross_scope=True, both defrag and detox search across all tags
     using pgvector ANN (embedding similarity) to find duplicates/conflicts.
+    `push` (optional) lets callers share their Push pipeline instance so
+    detox merges invalidate the caller's search cache.
     """
     defrag_result = await defrag(
         pg=pg,
@@ -36,6 +39,7 @@ async def reconcile(
         cross_scope=cross_scope,
         similarity_threshold=0.70,
         dry_run=dry_run,
+        push=push,
     )
 
     return {

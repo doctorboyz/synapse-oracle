@@ -4,6 +4,7 @@ import logging
 
 from src.db.pg_store import PgStore
 from src.embed.ollama import OllamaEmbedder
+from src.ingest.push import Push
 from src.reconcile.llm import analyze_conflict
 
 log = logging.getLogger("synapse.detox")
@@ -18,6 +19,7 @@ async def detox(
     cross_scope: bool = False,
     similarity_threshold: float = 0.70,
     dry_run: bool = False,
+    push: Push | None = None,
 ) -> dict:
     """Detect conflicts between documents using ANN pre-filter + LLM analysis.
 
@@ -45,8 +47,17 @@ async def detox(
             "resolutions": [],
         }
 
+    # Resolution goes through the push pipeline so merged docs are embedded
+    # and chunked (raw pg.supersede leaves them dense-unfindable — the
+    # audit-item-1 bug pattern, 4th instance, fixed 2026-10-11).
+    if push is None:
+        push = Push(pg, embedder)
+
     doc_ids = {d["id"] for d in all_docs}
     checked_pairs = set()
+    # Docs retired by a resolution this run — a merged doc replaces BOTH
+    # sides, so neither side may be analyzed again in the same pass.
+    retired_ids: set[str] = set()
     conflicts = []
     resolutions = []
     errors = 0
@@ -57,6 +68,8 @@ async def detox(
     if embedder:
         for doc in all_docs:
             doc_id = doc["id"]
+            if doc_id in retired_ids:
+                continue
             full_doc = await pg.get(doc_id, include_chain=False)
             if not full_doc:
                 continue
@@ -68,6 +81,8 @@ async def detox(
             )
 
             for candidate in candidates:
+                if candidate["id"] in retired_ids:
+                    continue
                 pairs_analyzed += 1
                 pair_key = tuple(sorted([doc_id, candidate["id"]]))
                 checked_pairs.add(pair_key)
@@ -76,7 +91,7 @@ async def detox(
                     continue
 
                 result = await _analyze_and_resolve(
-                    full_doc, candidate, settings, dry_run, pg
+                    full_doc, candidate, settings, dry_run, pg, push
                 )
                 if result.get("llm_error"):
                     llm_errors += 1
@@ -85,12 +100,22 @@ async def detox(
                     _count_action(action_counts, result["conflict"].get("action"))
                     if result.get("resolution"):
                         resolutions.append(result["resolution"])
+                        retired_ids.update(
+                            (doc_id, candidate["id"])
+                        )
+                        # The anchor doc was just retired into the merge —
+                        # its remaining candidates would pair a dead doc.
+                        break
                     if result.get("error"):
                         errors += 1
     else:
         # Fallback: pairwise comparison (same doc_type)
         for i, doc_a in enumerate(all_docs):
+            if doc_a["id"] in retired_ids:
+                continue
             for doc_b in all_docs[i + 1:]:
+                if doc_b["id"] in retired_ids:
+                    continue
                 if doc_a.get("doc_type") != doc_b.get("doc_type"):
                     continue
 
@@ -104,7 +129,7 @@ async def detox(
 
                 try:
                     result = await _analyze_and_resolve(
-                        full_a, full_b, settings, dry_run, pg
+                        full_a, full_b, settings, dry_run, pg, push
                     )
                 except Exception:
                     result: dict = {"llm_error": True}
@@ -116,6 +141,8 @@ async def detox(
                     _count_action(action_counts, result["conflict"].get("action"))
                     if result.get("resolution"):
                         resolutions.append(result["resolution"])
+                        retired_ids.update((doc_a["id"], doc_b["id"]))
+                        break
                     if result.get("error"):
                         errors += 1
 
@@ -144,7 +171,7 @@ def _count_action(action_counts: dict, action: str | None) -> None:
 
 
 async def _analyze_and_resolve(
-    doc_a: dict, doc_b: dict, settings, dry_run: bool, pg: PgStore
+    doc_a: dict, doc_b: dict, settings, dry_run: bool, pg: PgStore, push: Push
 ) -> dict:
     """Analyze conflict between two docs and optionally resolve.
 
@@ -185,22 +212,38 @@ async def _analyze_and_resolve(
 
     if analysis.get("merged_content"):
         try:
-            supersede_id = analysis.get("supersede_id", "a")
-            old_doc = doc_a if supersede_id == "a" else doc_b
+            # Judge semantics: supersede_id "a" means doc A supersedes doc B —
+            # A is the current side, B is the outdated one. The merged doc
+            # replaces BOTH sides: create it via the push pipeline (embeds +
+            # chunks — raw pg.supersede leaves it dense-unfindable), then
+            # retire the surviving side against the same merge.
+            supersede_id = (analysis.get("supersede_id") or "a").lower()
+            loser = doc_b if supersede_id == "a" else doc_a
+            winner = doc_b if loser is doc_a else doc_a
             merged = analysis["merged_content"]
+            reason = f"detox_conflict: {analysis.get('reason', 'conflict detected')}"
 
-            result = await pg.supersede(
-                old_id=old_doc["id"],
-                new_content=merged,
-                reason=f"detox_conflict: {analysis.get('reason', 'conflict detected')}",
+            result = await push.supersede_and_reindex(
+                old_id=loser["id"],
+                content=merged,
+                title=winner.get("title"),
+                reason=reason,
             )
+            new_id = result.get("id")
+            if not new_id:
+                raise ValueError("supersede_and_reindex returned no id")
+
+            # Retire the surviving side into the merged doc too
+            await pg.mark_superseded(winner["id"], new_id, reason=reason)
+
             conflict_info["action"] = "resolved"
-            conflict_info["new_id"] = result.get("id")
+            conflict_info["new_id"] = new_id
             return {
                 "conflict": conflict_info,
                 "resolution": {
-                    "old_id": old_doc["id"],
-                    "new_id": result.get("id"),
+                    "old_id": loser["id"],
+                    "winner_id": winner["id"],
+                    "new_id": new_id,
                     "reason": analysis.get("reason"),
                 },
             }

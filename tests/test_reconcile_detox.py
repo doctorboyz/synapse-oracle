@@ -17,6 +17,7 @@ class MockPgStore:
         self._get_map = get_map or {}
         self._list_docs = list_docs_return or []
         self.supersede = AsyncMock(return_value=supersede_return or {"id": "resolved-id"})
+        self.mark_superseded = AsyncMock()
 
     async def get(self, doc_id, include_chain=False):
         return self._get_map.get(doc_id)
@@ -131,9 +132,16 @@ class TestDetox:
         assert result["errors"] == 0
         assert len(result["resolutions"]) == 1
         resolution = result["resolutions"][0]
-        assert resolution["old_id"] == "d1"
+        # Judge semantics (fixed 2026-10-11): supersede_id "a" = A supersedes
+        # B — the outdated side (the supersede TARGET) is B, so old_id=d2.
+        assert resolution["old_id"] == "d2"
+        assert resolution["winner_id"] == "d1"
         assert resolution["reason"] == "contradiction"
         pg.supersede.assert_awaited_once()
+        # The surviving side is retired into the merged doc as well
+        pg.mark_superseded.assert_awaited_once_with(
+            "d1", "resolved-id", reason="detox_conflict: contradiction"
+        )
 
     @pytest.mark.asyncio
     async def test_detox_resolves_with_supersede_id_b(self, monkeypatch):
@@ -157,7 +165,9 @@ class TestDetox:
         result = await detox(pg, embedder=MockEmbedder(), settings=MockSettings())
         assert result["conflicts_found"] == 1
         assert len(result["resolutions"]) == 1
-        assert result["resolutions"][0]["old_id"] == "d2"
+        # supersede_id "b" = B supersedes A — A is the outdated side
+        assert result["resolutions"][0]["old_id"] == "d1"
+        assert result["resolutions"][0]["winner_id"] == "d2"
 
     @pytest.mark.asyncio
     async def test_detox_dry_run(self, monkeypatch):
@@ -338,10 +348,14 @@ class TestDetox:
 
         monkeypatch.setattr(detox_module, "analyze_conflict", mock_analyze)
         result = await detox(pg, embedder=MockEmbedder(), settings=MockSettings())
-        assert call_count == 3
-        assert result["conflicts_found"] == 3
+        # (d1,d2) resolves first and retires BOTH sides into the merge, so
+        # d3 cannot be paired with a retired doc in the same pass — its
+        # pairs are picked up on the next reconcile run. This prevents
+        # churn where a fresh merge gets re-merged with leftovers.
+        assert call_count == 1
+        assert result["conflicts_found"] == 1
         assert result["errors"] == 0
-        assert len(result["resolutions"]) == 3
+        assert len(result["resolutions"]) == 1
 
     @pytest.mark.asyncio
     async def test_detox_scope_filter(self):

@@ -325,6 +325,7 @@ async def _cmd_reconcile(args):
                 scope=args.scope,
                 cross_scope=args.cross_scope,
                 dry_run=args.dry_run,
+                push=components.push,
             )
             defrag = result.get("defrag", {})
             detox = result.get("detox", {})

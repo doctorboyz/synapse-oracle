@@ -243,6 +243,34 @@ class PgStore:
 
         return {"id": str(new_row["id"]), "superseded": old_id, "status": "superseded"}
 
+    async def mark_superseded(self, doc_id: str, new_id: str,
+                              reason: str = "superseded") -> None:
+        """Retire a doc by pointing it at an already-created successor.
+
+        Used by detox conflict resolution: the merge creates the successor
+        via supersede(), then the surviving side of the conflict is retired
+        against the same successor — a merged doc replaces BOTH sides.
+        Nothing is deleted; the chain stays queryable in supersede_log.
+        Embedding is cleared so retired docs never surface in ANN results.
+        """
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """UPDATE knowledge_documents
+                   SET superseded_by = $1, embedding = NULL, updated_at = NOW()
+                   WHERE id = $2 AND superseded_by IS NULL
+                   RETURNING id""",
+                uuid.UUID(new_id), uuid.UUID(doc_id),
+            )
+            if not row:
+                raise ValueError(
+                    f"Document {doc_id} not found or already superseded"
+                )
+            await conn.execute(
+                """INSERT INTO supersede_log (old_id, new_id, reason)
+                   VALUES ($1, $2, $3)""",
+                uuid.UUID(doc_id), uuid.UUID(new_id), reason,
+            )
+
     # --- Search ---
 
     async def search_fts(
