@@ -89,28 +89,28 @@ _(none)_
 ---
 
 ### G-003: Chunking + Tag Assistant Infrastructure
-- **Status**: pending
+- **Status**: in-progress
 - **Priority**: high
 - **Phase**: short-term
 - **Definition of Done**: Long documents chunked, tag-based assistant rules active
 - **Created**: 2026-05-27
-- **Updated**: 2026-05-27
+- **Updated**: 2026-10-11
 
 #### Objectives
 | ID | Objective | Status | Evidence | Updated |
 |----|-----------|--------|----------|---------|
-| O-1 | chunk_text() (1500 chars, 200 overlap) | pending | — | 2026-05-27 |
-| O-2 | document_chunks with embeddings | pending | Schema exists | 2026-05-27 |
-| O-3 | search_chunks() method | pending | — | 2026-05-27 |
-| O-4 | tag_rules auto-classification | pending | Schema exists | 2026-05-27 |
-| O-5 | scheduled_tasks with alerting | pending | Schema exists | 2026-05-27 |
-| O-6 | alert_log → LINE notifications | pending | Schema exists | 2026-05-27 |
+| O-1 | chunk_text() (1500 chars, 200 overlap) | completed | `src/ingest/push.py` CHUNK_SIZE=1500, CHUNK_OVERLAP=200 — `_chunk_and_embed()` in push pipeline | 2026-10-11 |
+| O-2 | document_chunks with embeddings | completed | `Push._chunk_and_embed()` writes + embeds chunks on push/supersede; causal test `test_supersede_long_doc_chunks_reindexed` | 2026-10-11 |
+| O-3 | search_chunks() method | completed | `src/db/pg_store.py:1384` — wired into dense path via `_dense_with_chunks` (audit item 2, 11/10/26); keyword past 4000-char truncation found dense (R@5 12/12) + `matched_chunk_content` rides along | 2026-10-11 |
+| O-4 | tag_rules auto-classification | pending | — | 2026-05-27 |
+| O-5 | scheduled_tasks with alerting | pending | — | 2026-05-27 |
+| O-6 | alert_log → LINE notifications | pending | — | 2026-05-27 |
 
 #### Audit Trail
+- 2026-10-11 15:04 — O-1/O-2/O-3 completed — chunking was already built but unwired (audit item 2: "search_chunks เขียนแล้วไม่มีใครเรียก"); knowledge-network audit wired it into the dense path with chunk-level RRF. Status pending → in-progress (tag assistant 3 objectives remain)
 - 2026-05-27 23:19 — pending (schema ready, implementation needed)
 
 #### Blockers
-- [CAPABILITY] Chunking needs testing with real long documents
 - [DEPENDENCY] Tag assistant needs LINE notification pipeline
 
 ---
@@ -212,11 +212,39 @@ _(none)_
 
 ---
 
+### G-008: Knowledge Network Quality — เก็บได้ เรียกได้ เรียนได้ เชื่อมโยงได้
+- **Status**: completed
+- **Priority**: critical
+- **Phase**: short-term
+- **Definition of Done**: Ada audit 8 ข้อแก้ครบ + reconcile production รันจริงสะอาด + R@5 100% + bug pattern ปิดถาวร
+- **Created**: 2026-10-11
+- **Updated**: 2026-10-11
+
+#### Objectives
+| ID | Objective | Status | Evidence | Updated |
+|----|-----------|--------|----------|---------|
+| O-1 | Audit 8 ข้อแก้ครบ (embed/chunk/filter/cache/N+1/error/benchmark) | completed | commit `2466f69`, causal tests ×16, 674→678 tests pass | 2026-10-11 |
+| O-2 | R@5 100% hybrid+dense (จาก 83%/75%) | completed | `benchmarks/results/r_at_5_{before,after,run2_post_reconcile}.json` — 100% คง 3 runs | 2026-10-11 |
+| O-3 | Reconcile รันจริงบน production สะอาด | completed | รอบ1 2 conflicts (พบ defect) → fix+repair → รอบ2 0 conflicts; vault 97 live/97 embedded/0 stale | 2026-10-11 |
+| O-4 | Detox resolve defect แก้ (unembed + ทิศกลับ) | completed | ISSUE-011, commit `8265976`, causal test `TestDetoxResolution` | 2026-10-11 |
+| O-5 | Raw pg.supersede deprecated + call sites ชง pipeline หมด | completed | commit `ff02749`, source-guard test กัน pattern กลับมา | 2026-10-11 |
+| O-6 | Test suite ไม่เขียน production (ISSUE-010) | completed | conftest บังคับ SYNAPSE_DB_URL=test DB, pollution เก็บกวาด 107→100 docs | 2026-10-11 |
+| O-7 | Merge v3 → main | completed | fast-forward `138195f`→`b134b6e`, 678 tests ผ่านบน main ก่อน push | 2026-10-11 |
+
+#### Audit Trail
+- 2026-10-11 15:04 — goal complete (7/7 objectives) — งานจากคำสั่งคุณหมอผ่าน Hermes, audit โดย Ada
+
+#### Blockers
+_(none)_
+
+---
+
 ## Completed Goals
 - **G-001**: v4 Migration — PostgreSQL Single Source of Truth (2026-05-27)
 - **G-002**: LINE Chatbot — Knowledge Q&A + Ingestion (2026-05-27)
 - **G-004**: Test Suite Update (2026-05-28)
 - **G-007**: Obsidian Bidirectional Integration (2026-05-26)
+- **G-008**: Knowledge Network Quality (2026-10-11)
 
 ## Archived Roadmaps
 - [2026-05-27 roadmap](roadmap/2026-05-27.md) — Previous v3 roadmap (PostgreSQL+Qdrant)
