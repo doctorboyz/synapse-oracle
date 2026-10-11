@@ -10,7 +10,9 @@ class MockPgStore:
     def __init__(self, list_docs_return=None, get_map=None, supersede_return=None):
         self.list_docs = AsyncMock(return_value=list_docs_return or [])
         self._get_map = get_map or {}
-        self.supersede = AsyncMock(return_value=supersede_return or {"id": "new-id"})
+        # defrag routes supersedes through the push pipeline, which calls
+        # the raw primitive (_supersede_raw) — mirror both.
+        self._supersede_raw = AsyncMock(return_value=supersede_return or {"id": "new-id"})
         # defrag phase 1 reads hashes in one bulk query — mirror get_map so
         # tests keep describing docs via the same fixture shape.
         self.list_doc_hashes = AsyncMock(return_value=[
@@ -75,8 +77,9 @@ class TestDefrag:
         assert group["keep"] == "d1"
         assert group["supersede"] == ["d2"]
         assert group["action"] == "superseded"
-        pg.supersede.assert_awaited_once_with(
-            old_id="d2", new_content="b", reason="defrag_exact_duplicate"
+        pg._supersede_raw.assert_awaited_once_with(
+            old_id="d2", new_content="b", reason="defrag_exact_duplicate",
+            new_title=None,
         )
 
     @pytest.mark.asyncio
@@ -93,7 +96,7 @@ class TestDefrag:
         assert result["compacted"] == 1
         assert result["errors"] == 0
         assert result["groups"][0]["action"] == "would_supersede"
-        pg.supersede.assert_not_awaited()
+        pg._supersede_raw.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_defrag_scope_filter(self):
@@ -110,7 +113,7 @@ class TestDefrag:
                 "d2": {"id": "d2", "title": "Same Title", "tags": ["s1"], "content": "b", "content_hash": "same"},
             },
         )
-        pg.supersede.side_effect = RuntimeError("db locked")
+        pg._supersede_raw.side_effect = RuntimeError("db locked")
         result = await defrag(pg)
         assert result["duplicates_found"] == 1
         assert result["compacted"] == 0

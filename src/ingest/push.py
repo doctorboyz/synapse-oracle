@@ -256,7 +256,7 @@ class Push:
         if source_file:
             doc_metadata.setdefault("source_file", source_file)
 
-        result = await self.pg.supersede(
+        result = await self.pg._supersede_raw(
             old_id=old_id,
             new_content=content,
             reason=reason,

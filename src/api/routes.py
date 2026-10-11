@@ -150,14 +150,21 @@ async def api_line_webhook(request: Request):
 
 @router.post("/supersede")
 async def api_supersede(body: dict):
-    result = await pg.supersede(
+    # Through the push pipeline: raw pg.supersede leaves the new doc
+    # dense-unfindable (deprecated, ISSUE-011). supersede_and_reindex
+    # embeds + chunks the new doc and clears the old embedding.
+    result = await push.supersede_and_reindex(
         old_id=body["old_id"],
-        new_content=body["new_content"],
+        content=body["new_content"],
+        title=body.get("new_title"),
         reason=body.get("reason", "updated"),
-        new_title=body.get("new_title"),
     )
-    await pg.clear_embedding(body["old_id"])
-    return result
+    # Preserve the historical response shape ({"superseded": old_id})
+    return {
+        "id": result.get("id"),
+        "superseded": result.get("old_id"),
+        "status": result.get("status"),
+    }
 
 
 # --- Trace ---

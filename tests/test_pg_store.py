@@ -72,7 +72,7 @@ class TestPgStoreFTS:
 
     async def test_search_excludes_superseded(self, clean_pg):
         add_result = await clean_pg.add(title="Old Doc", content="old knowledge")
-        await clean_pg.supersede(add_result["id"], "new and improved knowledge", reason="updated")
+        await clean_pg._supersede_raw(add_result["id"], "new and improved knowledge", reason="updated")
         results = await clean_pg.search_fts("old", limit=10)
         # The old doc is superseded (excluded by WHERE superseded_by IS NULL)
         # but the new doc inherits title "Old Doc" which matches "old"
@@ -84,7 +84,7 @@ class TestPgStoreFTS:
 class TestPgStoreSupersede:
     async def test_supersede_creates_new(self, clean_pg):
         add_result = await clean_pg.add(title="Original", content="version 1")
-        result = await clean_pg.supersede(add_result["id"], "version 2")
+        result = await clean_pg._supersede_raw(add_result["id"], "version 2")
         assert result["status"] == "superseded"
         assert result["superseded"] == add_result["id"]
 
@@ -93,9 +93,9 @@ class TestPgStoreSupersede:
 
     async def test_supersede_already_superseded(self, clean_pg):
         add_result = await clean_pg.add(title="Test", content="content")
-        await clean_pg.supersede(add_result["id"], "new content")
+        await clean_pg._supersede_raw(add_result["id"], "new content")
         with pytest.raises(ValueError, match="already superseded"):
-            await clean_pg.supersede(add_result["id"], "another update")
+            await clean_pg._supersede_raw(add_result["id"], "another update")
 
 
 @pytest.mark.asyncio
@@ -247,7 +247,7 @@ class TestPgStoreSearchTopics:
             title="Will Be Superseded", content="v1",
             source_file="/path/to/updated.md", source_project="test",
         )
-        result = await clean_pg.supersede(add_result["id"], "v2", reason="updated")
+        result = await clean_pg._supersede_raw(add_result["id"], "v2", reason="updated")
 
         found = await clean_pg.find_by_source_file("/path/to/updated.md", "test", include_hash=True)
         assert found is not None
@@ -407,7 +407,7 @@ class TestPgVector:
         await clean_pg.set_embedding(doc_id, [0.5] * 768)
 
         # Supersede it
-        new_result = await clean_pg.supersede(
+        new_result = await clean_pg._supersede_raw(
             doc_id, "new content superseding original"
         )
         await clean_pg.set_embedding(new_result["id"], [0.5] * 768)

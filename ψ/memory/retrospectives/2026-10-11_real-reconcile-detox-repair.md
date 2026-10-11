@@ -26,4 +26,4 @@
 ## ค้าง
 
 - 2 outdated docs (1660218d, ac04a226) ถูก retire แล้วแต่ยังอยู่ใน vault ตามหลัก nothing-is-deleted — ตรวจได้ผ่าน supersede_log
-- `pg.supersede` ยังเป็น primitive ที่ไม่ embed — ถ้ามีคนเรียกจากที่ใหม่อีกจะเกิด bug เดิม (ควร wrap หรือ deprecate)
+- ~~`pg.supersede` ยังเป็น primitive ที่ไม่ embed~~ **เสร็จใน session เดียวกัน**: raw body ย้ายเป็น `_supersede_raw`, public `supersede` กลายเป็น deprecated wrapper (DeprecationWarning ชี้ไป `Push.supersede_and_reindex`) + call sites เถื่อนที่เหลือทั้ง 6 จุด (defrag ×2, line_handler ×2, routes /api/supersede, push internal) ชงผ่าน push pipeline หมด + source-guard test (`test_no_production_code_calls_raw_supersede`) สแกน src/ ทุก `.supersede(` ที่ไม่ใช่ pipeline — pattern นี้กลับมาไม่ได้อีก

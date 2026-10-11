@@ -4,6 +4,7 @@ import logging
 
 from src.db.pg_store import PgStore
 from src.embed.ollama import OllamaEmbedder
+from src.ingest.push import Push
 
 log = logging.getLogger("synapse.defrag")
 
@@ -51,6 +52,11 @@ async def defrag(
     total_removed = 0
     total_errors = 0
 
+    # Supersede through the push pipeline so the superseding doc is
+    # embedded + chunked (raw pg.supersede is deprecated — leaves new docs
+    # dense-unfindable, ISSUE-011).
+    push = Push(pg, embedder)
+
     for ch, docs in seen_hashes.items():
         if len(docs) <= 1:
             continue
@@ -74,9 +80,9 @@ async def defrag(
                 # Fetch content only for actual duplicates (rare), not for
                 # every doc in the vault — this is not the phase-1 scan loop.
                 full_doc = await pg.get(old_doc["id"], include_chain=False)
-                await pg.supersede(
+                await push.supersede_and_reindex(
                     old_id=old_doc["id"],
-                    new_content=(full_doc or {}).get("content", ""),
+                    content=(full_doc or {}).get("content", ""),
                     reason="defrag_exact_duplicate",
                 )
                 total_merged += 1
@@ -180,9 +186,9 @@ async def _semantic_defrag(
 
         for d in dup_group:
             try:
-                await pg.supersede(
+                await Push(pg, embedder).supersede_and_reindex(
                     old_id=d["id"],
-                    new_content=full_doc.get("content", ""),
+                    content=full_doc.get("content", ""),
                     reason=f"defrag_semantic_duplicate (score={d['score']:.3f})",
                 )
                 merged += 1

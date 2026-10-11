@@ -64,7 +64,7 @@ class TestMCPPush:
     async def test_push_supersede_and_get_chain(self, app_components):
         pg, push, search = app_components
         add_result = await push.push_text(title="Original", content="version 1", tags=["shared"])
-        supersede_result = await pg.supersede(add_result["id"], "version 2")
+        supersede_result = await pg._supersede_raw(add_result["id"], "version 2")
 
         doc = await pg.get(add_result["id"], include_chain=True)
         assert doc["superseded_by"] is not None

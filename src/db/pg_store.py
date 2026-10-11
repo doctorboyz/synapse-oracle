@@ -3,6 +3,7 @@
 import hashlib
 import json
 import uuid
+import warnings
 
 import asyncpg
 from pgvector.asyncpg import register_vector
@@ -160,6 +161,25 @@ class PgStore:
 
     async def supersede(self, old_id: str, new_content: str, reason: str = "updated",
                         new_title: str | None = None) -> dict:
+        """DEPRECATED — supersede without re-embedding leaves the new doc
+        dense-unfindable. Found 4+ times in production code (ISSUE-011,
+        audit-item-1 pattern). Use Push.supersede_and_reindex instead: it
+        embeds + chunks the new doc and clears the old embedding.
+
+        Kept working (delegates to _supersede_raw) so legacy callers keep
+        functioning — but every call now warns in tests and logs.
+        """
+        warnings.warn(
+            "PgStore.supersede does not embed the new document — use "
+            "Push.supersede_and_reindex instead, otherwise the superseding "
+            "doc is dense-unfindable",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return await self._supersede_raw(old_id, new_content, reason, new_title)
+
+    async def _supersede_raw(self, old_id: str, new_content: str, reason: str = "updated",
+                             new_title: str | None = None) -> dict:
         async with self.pool.acquire() as conn:
             old_row = await conn.fetchrow(
                 "SELECT * FROM knowledge_documents WHERE id = $1 AND superseded_by IS NULL",

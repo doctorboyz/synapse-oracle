@@ -733,9 +733,15 @@ async def _handle_task_command(cmd: str, args: str, pg, settings, scope: str | N
                 concepts=concepts,
                 metadata=metadata,
             )
-            # Also supersede old task
+            # Also supersede old task — through the push pipeline so the
+            # updated task stays embedded/dense-findable (ISSUE-011)
             try:
-                await pg.supersede(existing["id"], text, reason=f"task_update_via_{cmd}", new_title=title)
+                await pusher.supersede_and_reindex(
+                    old_id=existing["id"],
+                    content=text,
+                    title=title,
+                    reason=f"task_update_via_{cmd}",
+                )
                 if access_token and reply_token:
                     due_str = f" (due: {task_info['due_date']})" if task_info.get('due_date') else ""
                     await _send_reply(access_token, reply_token, f"📝 Task updated{due_str}")
@@ -1331,11 +1337,15 @@ async def process_line_events(
             existing = await _find_existing_task(pg, doc["title"], scope, tags=line_tags)
             if existing:
                 try:
-                    await pg.supersede(
-                        existing["id"],
-                        doc["content"],
+                    # Lazy-init the push pipeline — supersede via push keeps
+                    # the updated task embedded (raw pg.supersede deprecated)
+                    if pusher is None:
+                        pusher = Push(pg, embedder)
+                    await pusher.supersede_and_reindex(
+                        old_id=existing["id"],
+                        content=doc["content"],
+                        title=doc["title"],
                         reason="task_update",
-                        new_title=doc["title"],
                     )
                     superseded += 1
                     if access_token and reply_token and not silent:

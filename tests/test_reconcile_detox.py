@@ -16,7 +16,9 @@ class MockPgStore:
         self.list_docs = AsyncMock(return_value=list_docs_return or [])
         self._get_map = get_map or {}
         self._list_docs = list_docs_return or []
-        self.supersede = AsyncMock(return_value=supersede_return or {"id": "resolved-id"})
+        # detox resolves through the push pipeline, which calls the raw
+        # primitive (_supersede_raw) — mirror both names.
+        self._supersede_raw = AsyncMock(return_value=supersede_return or {"id": "resolved-id"})
         self.mark_superseded = AsyncMock()
 
     async def get(self, doc_id, include_chain=False):
@@ -137,7 +139,7 @@ class TestDetox:
         assert resolution["old_id"] == "d2"
         assert resolution["winner_id"] == "d1"
         assert resolution["reason"] == "contradiction"
-        pg.supersede.assert_awaited_once()
+        pg._supersede_raw.assert_awaited_once()
         # The surviving side is retired into the merged doc as well
         pg.mark_superseded.assert_awaited_once_with(
             "d1", "resolved-id", reason="detox_conflict: contradiction"
@@ -191,7 +193,7 @@ class TestDetox:
         result = await detox(pg, embedder=MockEmbedder(), settings=MockSettings(), dry_run=True)
         assert result["conflicts_found"] == 1
         assert len(result["resolutions"]) == 0
-        pg.supersede.assert_not_awaited()
+        pg._supersede_raw.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_detox_no_embedder(self, monkeypatch):
@@ -312,7 +314,7 @@ class TestDetox:
                 "d2": {"id": "d2", "title": "B", "scope": "s1", "content": "b"},
             },
         )
-        pg.supersede.side_effect = RuntimeError("db locked")
+        pg._supersede_raw.side_effect = RuntimeError("db locked")
         monkeypatch.setattr(
             detox_module,
             "analyze_conflict",

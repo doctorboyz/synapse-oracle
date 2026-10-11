@@ -442,6 +442,66 @@ class TestDetoxResolution:
         )
 
 
+# ── 1c. เก็บได้: raw pg.supersede is deprecated, pipeline path is clean ──
+
+
+class TestSupersedeDeprecation:
+    @pytest.mark.asyncio
+    async def test_raw_pg_supersede_emits_deprecation_warning(self, clean_pg):
+        """Calling the raw primitive directly must warn — it leaves the new
+        doc dense-unfindable (4 production instances found, ISSUE-011)."""
+        import warnings
+
+        push = Push(clean_pg, FakeEmbedder())
+        old = await push.push_text(
+            title="Dep Target", content="quantum deprecation target",
+            tags=["test"], skip_semantic_dedup=True,
+        )
+        with pytest.warns(DeprecationWarning, match="supersede_and_reindex"):
+            await clean_pg.supersede(
+                old["id"], "quantum replaced content", reason="test"
+            )
+
+    @pytest.mark.asyncio
+    async def test_supersede_and_reindex_path_does_not_warn(self, clean_pg):
+        """The sanctioned pipeline must stay warning-free."""
+        import warnings
+
+        push = Push(clean_pg, FakeEmbedder())
+        old = await push.push_text(
+            title="Clean Path", content="quantum clean path",
+            tags=["test"], skip_semantic_dedup=True,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
+            result = await push.supersede_and_reindex(
+                old_id=old["id"], content="quantum reindexed content",
+            )
+        assert result["status"] == "superseded"
+
+    def test_no_production_code_calls_raw_supersede(self):
+        """Source guard: the unembedded-supersede bug pattern must never
+        return. Any raw `.supersede(` call in src/ (outside the deprecated
+        wrapper itself) reintroduces dense-unfindable docs — fail loudly.
+        """
+        import re
+        from pathlib import Path
+
+        src_root = Path(__file__).resolve().parent.parent / "src"
+        offenders = []
+        pattern = re.compile(r"\.supersede\(")
+        for py in src_root.rglob("*.py"):
+            for lineno, line in enumerate(py.read_text().splitlines(), 1):
+                if ".supersede_and_reindex(" in line:
+                    continue
+                if pattern.search(line):
+                    offenders.append(f"{py}:{lineno}: {line.strip()}")
+        assert offenders == [], (
+            "raw .supersede() call sites found in production code — route "
+            "them through Push.supersede_and_reindex:\n" + "\n".join(offenders)
+        )
+
+
 # ── 6. เชื่อมโยงได้: defrag must not N+1 ─────────────────────────────────
 
 
