@@ -38,15 +38,13 @@ async def defrag(
         }
 
     # Phase 1: Exact duplicates by content_hash only (no scope boundary)
+    # One bulk query — never fetch docs one-by-one (no N+1)
+    all_hashes = await pg.list_doc_hashes(scope=scope, tags=tags)
     seen_hashes: dict[str, list[dict]] = {}
-    for doc in all_docs:
-        full_doc = await pg.get(doc["id"], include_chain=False)
-        if not full_doc:
+    for doc in all_hashes:
+        if not doc.get("content_hash"):
             continue
-        ch = full_doc.get("content_hash", "")
-        if not ch:
-            continue
-        seen_hashes.setdefault(ch, []).append(full_doc)
+        seen_hashes.setdefault(doc["content_hash"], []).append(doc)
 
     groups = []
     total_merged = 0
@@ -73,9 +71,12 @@ async def defrag(
 
         for old_doc in docs[1:]:
             try:
+                # Fetch content only for actual duplicates (rare), not for
+                # every doc in the vault — this is not the phase-1 scan loop.
+                full_doc = await pg.get(old_doc["id"], include_chain=False)
                 await pg.supersede(
                     old_id=old_doc["id"],
-                    new_content=old_doc.get("content", ""),
+                    new_content=(full_doc or {}).get("content", ""),
                     reason="defrag_exact_duplicate",
                 )
                 total_merged += 1

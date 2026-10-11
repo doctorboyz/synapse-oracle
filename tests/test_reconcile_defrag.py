@@ -11,6 +11,17 @@ class MockPgStore:
         self.list_docs = AsyncMock(return_value=list_docs_return or [])
         self._get_map = get_map or {}
         self.supersede = AsyncMock(return_value=supersede_return or {"id": "new-id"})
+        # defrag phase 1 reads hashes in one bulk query — mirror get_map so
+        # tests keep describing docs via the same fixture shape.
+        self.list_doc_hashes = AsyncMock(return_value=[
+            {
+                "id": d["id"],
+                "title": d.get("title", ""),
+                "tags": d.get("tags", []),
+                "content_hash": d.get("content_hash"),
+            }
+            for d in self._get_map.values()
+        ])
 
     async def get(self, doc_id, include_chain=False):
         return self._get_map.get(doc_id)

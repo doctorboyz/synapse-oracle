@@ -11,6 +11,7 @@ from src.db.pg_store import PgStore
 from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
 from src.retrieve.hybrid_search import HybridSearch
+from src.cache import SearchCache
 
 log = logging.getLogger("synapse.cli")
 
@@ -47,14 +48,22 @@ async def get_components() -> Components:
         log.warning("Ollama not available, running without embeddings")
         embedder = None
 
-    push = Push(pg, embedder)
-    search = HybridSearch(pg, embedder, settings.search_weights, settings.search_rrf_k)
+    # Shared search cache — Push invalidates it on every write
+    cache = SearchCache()
+    push = Push(pg, embedder, cache=cache)
+    search = HybridSearch(pg, embedder, settings.search_weights, settings.search_rrf_k,
+                          cache=cache)
 
     return Components(settings, pg, embedder, push, search)
 
 
 async def cleanup(components: Components) -> None:
     """Close all connections."""
+    if components.embedder and hasattr(components.embedder, "aclose"):
+        try:
+            await components.embedder.aclose()
+        except Exception as e:
+            log.warning("Embedder close failed: %s", e)
     if components.pg:
         await components.pg.close()
 

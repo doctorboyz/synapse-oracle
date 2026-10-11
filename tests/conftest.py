@@ -12,10 +12,20 @@ from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
 from src.retrieve.hybrid_search import HybridSearch
 
+# Default to the dedicated throwaway test DB — NEVER the production vault.
+# The clean_pg fixture wipes every table; pointing it at `synapse` would
+# destroy the live vault (ISSUE-009 retro 2026-10-08).
 TEST_DB_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://admin:88888888@localhost:5432/synapse",
+    "TEST_DATABASE_URL",
+    "postgresql://admin:88888888@localhost:5432/synapse_test",
 )
+
+# Hard isolation (ISSUE-010): force every Settings() constructed inside a
+# test — including ones built internally by init_scan and friends — onto the
+# throwaway DB. SYNAPSE_DB_URL outranks DATABASE_URL in config.py, so a
+# developer shell exporting SYNAPSE_DB_URL=production would otherwise leak
+# test writes into the live vault. Pin the dedicated var for this process.
+os.environ["SYNAPSE_DB_URL"] = TEST_DB_URL
 
 # Module-level store, created per-event-loop
 _pg_store: PgStore | None = None

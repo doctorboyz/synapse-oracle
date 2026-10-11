@@ -18,9 +18,19 @@ CHUNK_OVERLAP = 200  # chars overlap between chunks
 class Push:
     """Push knowledge into PostgreSQL with pgvector embeddings."""
 
-    def __init__(self, pg: PgStore, embedder: OllamaEmbedder | None = None):
+    def __init__(self, pg: PgStore, embedder: OllamaEmbedder | None = None,
+                 cache=None):
         self.pg = pg
         self.embedder = embedder
+        self._cache = cache
+
+    def _invalidate_cache(self) -> None:
+        """Clear the search cache after a write so new knowledge is findable."""
+        if self._cache is not None:
+            try:
+                self._cache.clear()
+            except Exception as e:
+                log.warning("Cache invalidation failed: %s", e)
 
     async def _summarize(self, content: str, model: str | None = None) -> str:
         """Summarize long content using OpenRouter (fallback to Ollama)."""
@@ -90,18 +100,26 @@ class Push:
         if not self.embedder or len(content) <= CHUNK_SIZE:
             return 0
         chunks = self.chunk_text(content)
-        count = 0
-        for i, chunk_text in enumerate(chunks):
+        chunk_ids: list[str] = []
+        for i, chunk_str in enumerate(chunks):
             try:
-                chunk_id = await self.pg.add_chunk(doc_id, i, chunk_text)
-                vector = await self.embedder.embed(chunk_text[:MAX_CHUNK_CHARS])
-                await self.pg.set_chunk_embedding(chunk_id, vector)
-                count += 1
+                chunk_ids.append(await self.pg.add_chunk(doc_id, i, chunk_str))
             except Exception as e:
-                log.warning("Chunk %d embedding failed for %s: %s", i, doc_id, e)
-        if count:
-            log.info("Chunked doc %s into %d chunks (size=%d, overlap=%d)",
-                     doc_id, count, CHUNK_SIZE, CHUNK_OVERLAP)
+                log.warning("Chunk %d insert failed for %s: %s", i, doc_id, e)
+        if not chunk_ids:
+            return 0
+        try:
+            vectors = await self.embedder.embed_batch(
+                [c[:MAX_CHUNK_CHARS] for c in chunks[:len(chunk_ids)]]
+            )
+            for chunk_id, vector in zip(chunk_ids, vectors):
+                await self.pg.set_chunk_embedding(chunk_id, vector)
+            count = len(chunk_ids)
+        except Exception as e:
+            log.warning("Chunk embedding failed for %s: %s", doc_id, e)
+            return 0
+        log.info("Chunked doc %s into %d chunks (size=%d, overlap=%d)",
+                 doc_id, count, CHUNK_SIZE, CHUNK_OVERLAP)
         return count
 
     async def push_text(
@@ -148,6 +166,9 @@ class Push:
             source_project=source_project, oracle_name=oracle_name,
             concepts=concepts, tags=tags, metadata=doc_metadata,
         )
+
+        if result["status"] != "duplicate":
+            self._invalidate_cache()
 
         # Create traces from Obsidian-style [[links]] in content
         if result["status"] != "duplicate":
@@ -204,7 +225,7 @@ class Push:
         self,
         old_id: str,
         content: str,
-        title: str,
+        title: str | None = None,
         doc_type: str = "note",
         source_file: str | None = None,
         source_type: str = "scan_update",
@@ -221,6 +242,7 @@ class Push:
 
         Handles PG supersede + clear old embedding + embed new doc.
         Used when scanning detects an updated file (content_hash changed).
+        `title` may be None to carry the old title forward.
         """
         if concepts is None:
             concepts = extract_concepts(content)
@@ -238,6 +260,7 @@ class Push:
             old_id=old_id,
             new_content=content,
             reason=reason,
+            new_title=title,
         )
         new_id = result.get("id")
         if not new_id:
@@ -264,4 +287,5 @@ class Push:
                 except Exception as e:
                     log.warning("Chunking failed for %s: %s", new_id, e)
 
+        self._invalidate_cache()
         return {"status": "superseded", "id": new_id, "old_id": old_id, "tags": tags}

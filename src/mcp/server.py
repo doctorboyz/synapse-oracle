@@ -4,6 +4,8 @@ import asyncio
 import json
 import logging
 
+import jsonschema
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -14,8 +16,53 @@ from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
 from src.ingest.oracle_paths import validate_trace_relation
 from src.retrieve.hybrid_search import HybridSearch
+from src.cache import SearchCache
 
 log = logging.getLogger("synapse.mcp")
+
+
+def _format_tool_error(tool_name: str, arguments: dict, exc: Exception) -> dict:
+    """Error payloads must name the tool and the offending parameter.
+
+    A bare str(e) like 'ambiguous column created_at' gives the calling agent
+    no way to tell WHICH tool or parameter failed (ISSUE-009 lesson).
+    """
+    if isinstance(exc, KeyError):
+        missing = exc.args[0] if exc.args else "unknown"
+        return {
+            "error": f"{tool_name}: missing required parameter '{missing}'",
+            "tool": tool_name,
+            "parameter": str(missing),
+        }
+    return {
+        "error": f"{tool_name}: {exc}",
+        "tool": tool_name,
+        "exception_type": type(exc).__name__,
+    }
+
+
+def _validate_tool_input(tool_name: str, arguments: dict) -> dict | None:
+    """Validate arguments against the tool's inputSchema.
+
+    Runs inside our handler (SDK validation is disabled) so schema failures
+    name the tool as well as the parameter — the SDK's bare "Input
+    validation error" leaves the calling agent guessing WHICH tool
+    rejected the call (ISSUE-009 lesson). Returns an error payload, or
+    None when the arguments are valid.
+    """
+    tool_def = next((t for t in TOOL_DEFINITIONS if t.name == tool_name), None)
+    if tool_def is None:
+        return None
+    try:
+        jsonschema.validate(instance=arguments, schema=tool_def.inputSchema)
+    except jsonschema.ValidationError as e:
+        path = "/".join(str(p) for p in e.absolute_path)
+        return {
+            "error": f"{tool_name}: invalid arguments — {e.message}",
+            "tool": tool_name,
+            "parameter": path or None,
+        }
+    return None
 
 TOOL_DEFINITIONS = [
     Tool(
@@ -205,11 +252,24 @@ TOOL_DEFINITIONS = [
     ),
     Tool(
         name="synapse_reconcile_log",
-        description="View reconcile audit history: when defrag/detox ran, what was merged/fixed, and if it failed.",
+        description="View reconcile audit history: when defrag/detox ran, what was merged/fixed, and if it failed. Includes staleness status of the vault.",
         inputSchema={
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "default": 20, "description": "Max history entries to return"},
+            },
+        },
+    ),
+    Tool(
+        name="synapse_fix_doctype",
+        description="Fix incorrectly classified doc_types in bulk (e.g. LINE messages auto-classified as 'task' that should be 'note'). Dry-run by default.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "from_type": {"type": "string", "default": "task", "description": "doc_type to change"},
+                "to_type": {"type": "string", "default": "note", "description": "New doc_type"},
+                "source_type": {"type": "string", "description": "Only fix docs with this source_type"},
+                "dry_run": {"type": "boolean", "default": True, "description": "Report only, change nothing"},
             },
         },
     ),
@@ -263,8 +323,11 @@ async def create_app(settings: Settings | None = None) -> Server:
     except Exception:
         log.warning("Ollama not available, running without embeddings")
 
-    push = Push(pg, embedder)
-    search = HybridSearch(pg, embedder)
+    # Shared search cache — invalidated by every Push write
+    cache = SearchCache()
+
+    push = Push(pg, embedder, cache=cache)
+    search = HybridSearch(pg, embedder, cache=cache)
 
     server = Server("synapse")
 
@@ -272,9 +335,15 @@ async def create_app(settings: Settings | None = None) -> Server:
     async def list_tools():
         return TOOL_DEFINITIONS
 
-    @server.call_tool()
+    @server.call_tool(validate_input=False)
     async def call_tool(name: str, arguments: dict):
         try:
+            validation_error = _validate_tool_input(name, arguments)
+            if validation_error:
+                return [TextContent(
+                    type="text",
+                    text=json.dumps(validation_error, default=str),
+                )]
             if name == "synapse_search":
                 tags = arguments.get("tags") or ([arguments.get("scope")] if arguments.get("scope") else None)
                 results = await search.search(
@@ -306,13 +375,14 @@ async def create_app(settings: Settings | None = None) -> Server:
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "synapse_supersede":
-                result = await pg.supersede(
+                # Full pipeline: supersede + clear old embedding + embed new doc
+                # (pg.supersede alone left the new doc invisible to dense search)
+                result = await push.supersede_and_reindex(
                     old_id=arguments["old_id"],
-                    new_content=arguments["new_content"],
+                    content=arguments["new_content"],
                     reason=arguments.get("reason", "updated"),
-                    new_title=arguments.get("new_title"),
+                    title=arguments.get("new_title"),
                 )
-                await pg.clear_embedding(arguments["old_id"])
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "synapse_trace":
@@ -417,7 +487,9 @@ async def create_app(settings: Settings | None = None) -> Server:
 
             elif name == "synapse_reconcile_log":
                 logs = await pg.list_reconcile_log(limit=arguments.get("limit", 20))
-                return [TextContent(type="text", text=json.dumps(logs, indent=2, default=str))]
+                staleness = await pg.reconcile_staleness()
+                return [TextContent(type="text", text=json.dumps(
+                    {"history": logs, "staleness": staleness}, indent=2, default=str))]
 
             elif name == "synapse_write_to_obsidian":
                 from pathlib import Path
@@ -479,7 +551,8 @@ async def create_app(settings: Settings | None = None) -> Server:
 
         except Exception as e:
             log.error("Tool %s error: %s", name, e)
-            return [TextContent(type="text", text=json.dumps({"error": str(e)}))]
+            return [TextContent(type="text", text=json.dumps(
+                _format_tool_error(name, arguments, e), default=str))]
 
     return server
 

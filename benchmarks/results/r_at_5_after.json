@@ -1,0 +1,272 @@
+{
+  "label": "after",
+  "date": "2026-10-11T11:58:23",
+  "db": "localhost:5432/synapse_bench",
+  "embed_model": "nomic-embed-text",
+  "hybrid": {
+    "mode": "hybrid",
+    "r_at_5": 1.0,
+    "hits": 12,
+    "total": 12,
+    "first_ms_mean": 29.2,
+    "first_ms_p95": 59.6,
+    "repeat_ms_mean": 0.0,
+    "per_query": [
+      {
+        "query": "docker healthcheck restart policy",
+        "expect": "Docker Compose Patterns",
+        "found": true,
+        "top5": [
+          "Docker Compose Patterns",
+          "API Rate Limit Policy",
+          "Redis Failover Runbook"
+        ]
+      },
+      {
+        "query": "postgres gin index jsonb",
+        "expect": "PostgreSQL Index Strategy",
+        "found": true,
+        "top5": [
+          "PostgreSQL Index Strategy",
+          "Qdrant versus pgvector",
+          "FastAPI Middleware Guide"
+        ]
+      },
+      {
+        "query": "redis sentinel promote replica",
+        "expect": "Redis Failover Runbook",
+        "found": true,
+        "top5": [
+          "Redis Failover Runbook",
+          "Pytest Fixture Discipline",
+          "Qdrant versus pgvector"
+        ]
+      },
+      {
+        "query": "fastapi middleware order dependency",
+        "expect": "FastAPI Middleware Guide",
+        "found": true,
+        "top5": [
+          "FastAPI Middleware Guide",
+          "Docker Compose Patterns",
+          "Qdrant versus pgvector"
+        ]
+      },
+      {
+        "query": "pytest fixture scope cleanup",
+        "expect": "Pytest Fixture Discipline",
+        "found": true,
+        "top5": [
+          "Pytest Fixture Discipline",
+          "Qdrant versus pgvector",
+          "Redis Failover Runbook"
+        ]
+      },
+      {
+        "query": "qdrant filtered vector search",
+        "expect": "Qdrant versus pgvector",
+        "found": true,
+        "top5": [
+          "Qdrant versus pgvector",
+          "PostgreSQL Index Strategy",
+          "API Rate Limit Policy"
+        ]
+      },
+      {
+        "query": "thai tone marks font rendering",
+        "expect": "Thai Typography Notes",
+        "found": true,
+        "top5": [
+          "Thai Typography Notes",
+          "Pytest Fixture Discipline",
+          "Qdrant versus pgvector"
+        ]
+      },
+      {
+        "query": "liff id token session refresh",
+        "expect": "LINE LIFF Session Handling",
+        "found": true,
+        "top5": [
+          "LINE LIFF Session Handling",
+          "Docker Compose Patterns",
+          "Redis Failover Runbook"
+        ]
+      },
+      {
+        "query": "kafka quorum console recovery script",
+        "expect": "Streaming Platform Runbook",
+        "found": true,
+        "top5": [
+          "Streaming Platform Runbook",
+          "FastAPI Middleware Guide",
+          "Pytest Fixture Discipline"
+        ]
+      },
+      {
+        "query": "drain cordon ignore daemonsets",
+        "expect": "Node Maintenance Procedure",
+        "found": true,
+        "top5": [
+          "Node Maintenance Procedure",
+          "Qdrant versus pgvector",
+          "Pytest Fixture Discipline"
+        ]
+      },
+      {
+        "query": "webhook signer rotated key cache",
+        "expect": "Payments Outage Retro",
+        "found": true,
+        "top5": [
+          "API Rate Limit Policy",
+          "Payments Outage Retro",
+          "LINE LIFF Session Handling"
+        ]
+      },
+      {
+        "query": "rate limit 1000 requests per minute",
+        "expect": "API Rate Limit Policy",
+        "found": true,
+        "top5": [
+          "API Rate Limit Policy",
+          "FastAPI Middleware Guide",
+          "Streaming Platform Runbook"
+        ]
+      }
+    ]
+  },
+  "dense": {
+    "mode": "dense",
+    "r_at_5": 1.0,
+    "hits": 12,
+    "total": 12,
+    "first_ms_mean": 23.7,
+    "first_ms_p95": 28.1,
+    "repeat_ms_mean": 0.0,
+    "per_query": [
+      {
+        "query": "docker healthcheck restart policy",
+        "expect": "Docker Compose Patterns",
+        "found": true,
+        "top5": [
+          "Docker Compose Patterns",
+          "Redis Failover Runbook",
+          "Streaming Platform Runbook"
+        ]
+      },
+      {
+        "query": "postgres gin index jsonb",
+        "expect": "PostgreSQL Index Strategy",
+        "found": true,
+        "top5": [
+          "PostgreSQL Index Strategy",
+          "Qdrant versus pgvector",
+          "Payments Outage Retro"
+        ]
+      },
+      {
+        "query": "redis sentinel promote replica",
+        "expect": "Redis Failover Runbook",
+        "found": true,
+        "top5": [
+          "Redis Failover Runbook",
+          "Streaming Platform Runbook",
+          "Pytest Fixture Discipline"
+        ]
+      },
+      {
+        "query": "fastapi middleware order dependency",
+        "expect": "FastAPI Middleware Guide",
+        "found": true,
+        "top5": [
+          "FastAPI Middleware Guide",
+          "Streaming Platform Runbook",
+          "Payments Outage Retro"
+        ]
+      },
+      {
+        "query": "pytest fixture scope cleanup",
+        "expect": "Pytest Fixture Discipline",
+        "found": true,
+        "top5": [
+          "Pytest Fixture Discipline",
+          "Qdrant versus pgvector",
+          "Redis Failover Runbook"
+        ]
+      },
+      {
+        "query": "qdrant filtered vector search",
+        "expect": "Qdrant versus pgvector",
+        "found": true,
+        "top5": [
+          "Qdrant versus pgvector",
+          "PostgreSQL Index Strategy",
+          "API Rate Limit Policy"
+        ]
+      },
+      {
+        "query": "thai tone marks font rendering",
+        "expect": "Thai Typography Notes",
+        "found": true,
+        "top5": [
+          "Thai Typography Notes",
+          "Payments Outage Retro",
+          "Streaming Platform Runbook"
+        ]
+      },
+      {
+        "query": "liff id token session refresh",
+        "expect": "LINE LIFF Session Handling",
+        "found": true,
+        "top5": [
+          "LINE LIFF Session Handling",
+          "Payments Outage Retro",
+          "Streaming Platform Runbook"
+        ]
+      },
+      {
+        "query": "kafka quorum console recovery script",
+        "expect": "Streaming Platform Runbook",
+        "found": true,
+        "top5": [
+          "Streaming Platform Runbook",
+          "Payments Outage Retro",
+          "Node Maintenance Procedure"
+        ]
+      },
+      {
+        "query": "drain cordon ignore daemonsets",
+        "expect": "Node Maintenance Procedure",
+        "found": true,
+        "top5": [
+          "Node Maintenance Procedure",
+          "Payments Outage Retro",
+          "Qdrant versus pgvector"
+        ]
+      },
+      {
+        "query": "webhook signer rotated key cache",
+        "expect": "Payments Outage Retro",
+        "found": true,
+        "top5": [
+          "Payments Outage Retro",
+          "LINE LIFF Session Handling",
+          "PostgreSQL Index Strategy"
+        ]
+      },
+      {
+        "query": "rate limit 1000 requests per minute",
+        "expect": "API Rate Limit Policy",
+        "found": true,
+        "top5": [
+          "API Rate Limit Policy",
+          "Payments Outage Retro",
+          "Qdrant versus pgvector"
+        ]
+      }
+    ]
+  },
+  "supersede_check": {
+    "new_doc_findable_dense": true,
+    "old_doc_superseded": true
+  }
+}

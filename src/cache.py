@@ -14,13 +14,24 @@ class SearchCache:
         self._cache: OrderedDict[str, tuple] = OrderedDict()
         self._lock = Lock()
 
-    def _make_key(self, query: str, tags: list[str] | None, mode: str, limit: int) -> str:
+    def _make_key(self, query: str, tags: list[str] | None, mode: str, limit: int,
+                  doc_type: str | None = None, oracle: str | None = None,
+                  source_project: str | None = None,
+                  concepts: list[str] | None = None) -> str:
         tags_str = ",".join(sorted(tags)) if tags else "*"
-        return f"{query}||{tags_str}||{mode}||{limit}"
+        concepts_str = ",".join(sorted(concepts)) if concepts else "*"
+        # Every filter that changes result content MUST be in the key —
+        # otherwise cached results leak across filter variants.
+        return (f"{query}||{tags_str}||{mode}||{limit}"
+                f"||{doc_type or '*'}||{oracle or '*'}"
+                f"||{source_project or '*'}||{concepts_str}")
 
     def get(self, query: str, tags: list[str] | None = None, mode: str = "hybrid",
-            limit: int = 10) -> list | None:
-        key = self._make_key(query, tags, mode, limit)
+            limit: int = 10, doc_type: str | None = None,
+            oracle: str | None = None, source_project: str | None = None,
+            concepts: list[str] | None = None) -> list | None:
+        key = self._make_key(query, tags, mode, limit, doc_type, oracle,
+                             source_project, concepts)
         with self._lock:
             if key not in self._cache:
                 return None
@@ -32,8 +43,11 @@ class SearchCache:
             return results
 
     def put(self, query: str, results: list, tags: list[str] | None = None,
-            mode: str = "hybrid", limit: int = 10) -> None:
-        key = self._make_key(query, tags, mode, limit)
+            mode: str = "hybrid", limit: int = 10, doc_type: str | None = None,
+            oracle: str | None = None, source_project: str | None = None,
+            concepts: list[str] | None = None) -> None:
+        key = self._make_key(query, tags, mode, limit, doc_type, oracle,
+                             source_project, concepts)
         with self._lock:
             if key in self._cache:
                 del self._cache[key]

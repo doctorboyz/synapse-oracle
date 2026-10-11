@@ -229,13 +229,15 @@ async def _cmd_supersede(args):
 
     components = await get_components()
     try:
-        result = await components.pg.supersede(
+        # Full pipeline: supersede + clear old embedding + embed new doc.
+        # Calling pg.supersede directly left the new doc unfindable via
+        # dense search (audit 11/10/26 — stored knowledge went silent).
+        result = await components.push.supersede_and_reindex(
             old_id=args.old_id,
-            new_content=args.new_content,
+            content=args.new_content,
             reason=args.reason,
-            new_title=args.new_title,
+            title=args.new_title,
         )
-        await components.pg.clear_embedding(args.old_id)
         output(result)
     finally:
         await cleanup(components)

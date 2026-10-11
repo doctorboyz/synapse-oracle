@@ -85,10 +85,13 @@ class TestSettingsDefaults:
         assert settings.openrouter_model == "custom/model"
 
     def test_database_url_env_priority(self, monkeypatch):
+        # SYNAPSE_DB_URL must outrank DATABASE_URL (config.py): DATABASE_URL is
+        # a generic name many projects export, and a leaked one must never
+        # silently repoint synapse at another DB (ISSUE-010 cousin).
         monkeypatch.setenv("DATABASE_URL", "postgres://env-url")
         monkeypatch.setenv("SYNAPSE_DB_URL", "postgres://synapse-url")
         settings = Settings()
-        assert settings.database_url == "postgres://env-url"
+        assert settings.database_url == "postgres://synapse-url"
 
     def test_database_url_synapse_fallback(self, monkeypatch):
         monkeypatch.delenv("DATABASE_URL", raising=False)

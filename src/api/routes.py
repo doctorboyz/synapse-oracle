@@ -13,6 +13,7 @@ from src.embed.ollama import OllamaEmbedder
 from src.ingest.push import Push
 from src.ingest.oracle_paths import validate_trace_relation
 from src.retrieve.hybrid_search import HybridSearch
+from src.cache import SearchCache
 
 router = APIRouter(prefix="/api", tags=["synapse"])
 
@@ -36,8 +37,10 @@ def init_routes(pg_store: PgStore,
     pg = pg_store
     embedder = embedder_client
     _settings = settings
-    push = Push(pg, embedder)
-    search = HybridSearch(pg, embedder)
+    # Shared search cache — Push invalidates it on every write
+    cache = SearchCache()
+    push = Push(pg, embedder, cache=cache)
+    search = HybridSearch(pg, embedder, cache=cache)
 
 
 # --- Search ---

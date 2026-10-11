@@ -253,6 +253,7 @@ class PgStore:
         oracle: str | None = None,
         source_project: str | None = None,
         tags: list[str] | None = None,
+        concepts: list[str] | None = None,
         limit: int = 10,
     ) -> list[dict]:
         """Full-text search using tsvector + ILIKE merged via reciprocal rank fusion.
@@ -294,7 +295,18 @@ class PgStore:
             base_params.extend(tags)
             idx += len(tags)
 
-        base_where = " AND ".join(base_conditions) if base_conditions else "1=1"
+        concept_filter = ""
+        if concepts:
+            concept_placeholders = ", ".join(
+                f"${i}" for i in range(idx, idx + len(concepts)))
+            concept_filter = f""" AND knowledge_documents.id IN (
+                SELECT dc.doc_id FROM document_concepts dc
+                JOIN concepts c ON c.id = dc.concept_id
+                WHERE c.name IN ({concept_placeholders}))"""
+            base_params.extend(concepts)
+            idx += len(concepts)
+
+        base_where = (" AND ".join(base_conditions) if base_conditions else "1=1") + concept_filter
         cols = "DISTINCT knowledge_documents.id, title, scope, doc_type, oracle_name, source_project, LEFT(content, 500) as content, knowledge_documents.created_at"
 
         async with self.pool.acquire() as conn:
@@ -390,6 +402,7 @@ class PgStore:
         oracle: str | None = None,
         source_project: str | None = None,
         tags: list[str] | None = None,
+        concepts: list[str] | None = None,
         limit: int = 10,
         threshold: float | None = None,
     ) -> list[dict]:
@@ -417,7 +430,9 @@ class PgStore:
 
         threshold_cond = ""
         if threshold is not None:
-            threshold_cond = f" AND 1 - (kd.embedding <=> $1) >= {threshold}"
+            conditions.append(f"1 - (kd.embedding <=> $1) >= ${idx}")
+            params.append(threshold)
+            idx += 1
 
         tag_filter = ""
         if tags:
@@ -430,13 +445,25 @@ class PgStore:
             params.extend(tags)
             idx += len(tags)
 
+        concept_filter = ""
+        if concepts:
+            concept_placeholders = ", ".join(
+                f"${i}" for i in range(idx, idx + len(concepts)))
+            concept_filter = f""" AND kd.id IN (
+                SELECT dc.doc_id FROM document_concepts dc
+                JOIN concepts c ON c.id = dc.concept_id
+                WHERE c.name IN ({concept_placeholders})
+            )"""
+            params.extend(concepts)
+            idx += len(concepts)
+
         where = " AND ".join(conditions)
         sql = f"""SELECT kd.id, kd.title, kd.scope, kd.doc_type,
                          kd.oracle_name, kd.source_project,
                          LEFT(kd.content, 500) AS content, kd.created_at,
                          1 - (kd.embedding <=> $1) AS score
                   FROM knowledge_documents kd
-                  WHERE {where}{tag_filter}{threshold_cond}
+                  WHERE {where}{tag_filter}{concept_filter}{threshold_cond}
                   ORDER BY kd.embedding <=> $1
                   LIMIT ${idx}"""
 
@@ -576,7 +603,12 @@ class PgStore:
             if not current_ids:
                 break
 
-            rel_filter = f" AND t.relation = '{relation}'" if relation else ""
+            # Relation is parameterized — never interpolate user input into SQL
+            rel_filter = ""
+            rel_params: list = []
+            if relation:
+                rel_filter = f" AND t.relation = ${len(current_ids) + 1}"
+                rel_params = [relation]
             placeholders = ", ".join(f"${i+1}" for i in range(len(current_ids)))
             sql = f"""SELECT t.source_id, t.target_id, t.relation, t.confidence,
                              kd.id, kd.title, kd.doc_type
@@ -584,7 +616,9 @@ class PgStore:
                       JOIN knowledge_documents kd ON kd.id = t.{follow_col}
                       WHERE t.{match_col} IN ({placeholders}){rel_filter}
                         AND kd.superseded_by IS NULL"""
-            rows = await conn.fetch(sql, *[uuid.UUID(cid) for cid in current_ids])
+            rows = await conn.fetch(sql,
+                                    *[uuid.UUID(cid) for cid in current_ids],
+                                    *rel_params)
 
             next_ids = []
             for r in rows:
@@ -876,6 +910,71 @@ class PgStore:
             for r in rows
         ]
 
+    async def reconcile_staleness(self, threshold_days: int = 7) -> dict:
+        """Is reconcile keeping the vault healthy? Compares the last completed
+        run against a staleness threshold so agents can notice a vault that
+        has never been defragged/detoxed."""
+        from datetime import datetime, timezone
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """SELECT started_at FROM reconcile_log
+                   WHERE status = 'completed'
+                   ORDER BY started_at DESC LIMIT 1"""
+            )
+        if not row:
+            return {"last_success": None, "days_since_last_success": None,
+                    "status": "never_run", "threshold_days": threshold_days}
+        last = row["started_at"]
+        days = (datetime.now(timezone.utc) - last).total_seconds() / 86400
+        return {
+            "last_success": str(last),
+            "days_since_last_success": round(days, 1),
+            "status": "stale" if days > threshold_days else "fresh",
+            "threshold_days": threshold_days,
+        }
+
+    async def list_doc_hashes(
+        self, scope: str | None = None, tags: list[str] | None = None,
+        limit: int = 10000,
+    ) -> list[dict]:
+        """Fetch id/title/content_hash/tags for all live docs in ONE query.
+
+        Replaces the defrag N+1 pattern (list_docs + pg.get per doc).
+        """
+        conditions = ["kd.superseded_by IS NULL"]
+        params: list = []
+        idx = 1
+        if scope:
+            conditions.append(f"kd.scope = ${idx}")
+            params.append(scope)
+            idx += 1
+        # Always join tags (LEFT) so array_agg(t.name) resolves with or
+        # without a tags filter; the filter narrows via WHERE when present.
+        if tags:
+            tag_placeholders = ", ".join(f"${i}" for i in range(idx, idx + len(tags)))
+            conditions.append(f"t.name IN ({tag_placeholders})")
+            params.extend(tags)
+            idx += len(tags)
+        params.append(limit)
+        where = " AND ".join(conditions)
+        sql = f"""SELECT kd.id, kd.title, kd.content_hash,
+                         COALESCE(array_agg(t.name) FILTER (WHERE t.name IS NOT NULL), '{{}}') AS tags
+                  FROM knowledge_documents kd
+                  LEFT JOIN document_tags dt ON dt.doc_id = kd.id
+                  LEFT JOIN tags t ON t.id = dt.tag_id
+                  WHERE {where}
+                  GROUP BY kd.id, kd.title, kd.content_hash
+                  ORDER BY kd.created_at DESC
+                  LIMIT ${idx}"""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [
+            {"id": str(r["id"]), "title": r["title"],
+             "content_hash": r["content_hash"] or "",
+             "tags": list(r["tags"] or [])}
+            for r in rows
+        ]
 
     # --- Pending Reviews (LINE confirmation flow) ---
 
@@ -1239,8 +1338,11 @@ class PgStore:
     ) -> list[dict]:
         """Search document chunks by vector similarity. Returns chunks with parent doc info."""
         threshold_cond = ""
+        params: list = [vector]
         if threshold is not None:
-            threshold_cond = f" AND 1 - (dc.embedding <=> $1) >= {threshold}"
+            threshold_cond = " AND 1 - (dc.embedding <=> $1) >= $2"
+            params.append(threshold)
+        params.append(limit)
         sql = f"""SELECT dc.id AS chunk_id, dc.doc_id, dc.chunk_index, dc.content,
                          kd.title, kd.scope, kd.doc_type,
                          1 - (dc.embedding <=> $1) AS score
@@ -1248,9 +1350,9 @@ class PgStore:
                   JOIN knowledge_documents kd ON kd.id = dc.doc_id
                   WHERE dc.embedding IS NOT NULL AND kd.superseded_by IS NULL{threshold_cond}
                   ORDER BY dc.embedding <=> $1
-                  LIMIT $2"""
+                  LIMIT ${3 if threshold is not None else 2}"""
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch(sql, vector, limit)
+            rows = await conn.fetch(sql, *params)
         return [
             {
                 "chunk_id": str(r["chunk_id"]),
